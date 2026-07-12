@@ -6,7 +6,6 @@ import LoadingState from '@/components/LoadingState.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { booksApi, playbackApi } from '@/api/client'
 import { useBooksStore } from '@/stores/books'
-import { usePlayerStore } from '@/stores/player'
 import { listCachedChapterIds } from '@/utils/audioCache'
 import { getTtsCacheFingerprint } from '@/utils/ttsSettings'
 
@@ -15,7 +14,6 @@ const CHAPTER_PAGE_SIZE = 50
 const route = useRoute()
 const router = useRouter()
 const books = useBooksStore()
-const player = usePlayerStore()
 const booting = ref(true)
 const deleting = ref(false)
 const actionError = ref('')
@@ -229,20 +227,12 @@ onUnmounted(() => {
   clearPageSelectLeaveTimer()
 })
 
-async function openChapter(chapter, index = 0) {
-  const chapterList = chapters.value.map((c, i) => ({
-    id: c.id,
-    title: c.title || `第 ${i + 1} 章`,
-    index: i,
-  }))
-  // stopHard inside open/loadSegment switches off previous chapter/segment first.
-  await player.resumeFromServer(book.value.id, chapter.id, {
-    bookTitle: book.value.title,
-    chapterTitle: chapter.title || `第 ${index + 1} 章`,
-    chapterList,
-    autoplay: true,
+function openChapter(chapter) {
+  router.push({
+    name: 'player',
+    params: { bookId: book.value.id, chapterId: chapter.id },
+    query: { autoplay: '1' },
   })
-  router.push(`/player/${book.value.id}/${chapter.id}`)
 }
 
 async function removeBook() {
@@ -323,7 +313,7 @@ async function removeBook() {
               class="chapter-item"
               :class="{ 'is-latest': isLatestChapter(item.chapter) }"
               :data-chapter-id="item.chapter.id"
-              @click="openChapter(item.chapter, item.index)"
+              @click="openChapter(item.chapter)"
             >
               <div class="chapter-item-main">
                 <div class="chapter-title-row">

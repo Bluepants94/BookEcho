@@ -1,22 +1,56 @@
-import assert from 'node:assert/strict'
-import test from 'node:test'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  DEFAULTS,
+  getTtsCacheFingerprint,
+  loadTtsSettings,
+  saveTtsSettings,
+  STORAGE_KEY,
+} from './ttsSettings'
 
-import { getTtsCacheFingerprint } from './ttsSettings.js'
+afterEach(() => {
+  localStorage.clear()
+})
 
-test('TTS cache fingerprint includes an explicit audio cache format version', () => {
-  const fingerprint = getTtsCacheFingerprint({
-    provider: 'mimo',
-    base_url: 'https://api.example.test',
-    model: 'mimo-tts',
-    voice: 'reader',
-    style: '',
-    audio_format: 'pcm16',
-    speed: 1,
-    api_key: 'test-key',
+describe('TTS settings', () => {
+  it('ignores the legacy persisted synthesis speed', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ base_url: 'https://tts.example.test', model: 'voice-1', speed: 1.5 }),
+    )
+
+    expect(loadTtsSettings()).toEqual({
+      ...DEFAULTS,
+      base_url: 'https://tts.example.test',
+      model: 'voice-1',
+    })
+    expect(loadTtsSettings()).not.toHaveProperty('speed')
   })
 
-  assert.ok(
-    fingerprint.split('|').includes('audio-cache-format:v2'),
-    'cache fingerprints must include the audio cache format/parser version',
-  )
+  it('does not persist a user-configured synthesis speed', () => {
+    const saved = saveTtsSettings({
+      base_url: 'https://tts.example.test',
+      api_key: 'secret',
+      model: 'voice-1',
+      voice: 'alloy',
+      speed: 2,
+    })
+
+    expect(saved).not.toHaveProperty('speed')
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY))).not.toHaveProperty('speed')
+  })
+
+  it('uses fixed 1x synthesis in cache fingerprints', () => {
+    const settings = {
+      base_url: 'https://tts.example.test',
+      model: 'voice-1',
+      voice: 'alloy',
+    }
+
+    const slowFingerprint = getTtsCacheFingerprint({ ...settings, speed: 0.5 })
+    const fastFingerprint = getTtsCacheFingerprint({ ...settings, speed: 2 })
+
+    expect(slowFingerprint).toBe(fastFingerprint)
+    expect(slowFingerprint.split('|')).toContain('audio-cache-format:v2')
+    expect(slowFingerprint).toContain('|1|')
+  })
 })

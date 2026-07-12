@@ -38,6 +38,8 @@ const progressStyle = computed(() => ({
 
 const canSeek = computed(() => Number(player.chapterDuration) > 0)
 
+const waitingForAudio = computed(() => player.loading && !player.objectUrl)
+
 const durationLabel = computed(() => {
   if (!canSeek.value) return '时长未知'
   return formatTime(player.chapterDuration)
@@ -281,6 +283,7 @@ async function bootstrap() {
   const token = ++bootToken
   const bookId = route.params.bookId
   const chapterId = route.params.chapterId
+  const shouldAutoplay = route.query?.autoplay === '1'
   localError.value = ''
   ready.value = false
   try {
@@ -321,7 +324,8 @@ async function bootstrap() {
       if (found && !chapterTitle) chapterTitle = found.title
     }
 
-    // Same track already loaded / opening: keep current audio session.
+    // Same track already loaded / opening: normal navigation keeps its audio session.
+    // A one-time autoplay route intentionally continues to resumeFromServer below.
     // Critical for chapter auto-advance: store may have already open()ed with autoplay
     // before router.replace; re-bootstrapping with autoplay:false would kill continuous play.
     // Route params are strings; store IDs may be numbers — always compare via String().
@@ -334,7 +338,7 @@ async function bootstrap() {
       player.playing ||
       player.userStartedPlayback ||
       player.autoplayContinuity
-    if (sameTrack && continuityActive) {
+    if (!shouldAutoplay && sameTrack && continuityActive) {
       if (token !== bootToken) return
       ready.value = true
       await nextTick()
@@ -347,7 +351,7 @@ async function bootstrap() {
       bookTitle,
       chapterTitle,
       chapterList,
-      autoplay: false,
+      autoplay: shouldAutoplay,
     })
     if (token !== bootToken) return
     ready.value = true
@@ -358,6 +362,20 @@ async function bootstrap() {
     if (token !== bootToken) return
     localError.value = e.message || '打开播放页失败'
     ready.value = true
+  } finally {
+    if (shouldAutoplay && token === bootToken) {
+      await consumeAutoplayIntent(token)
+    }
+  }
+}
+
+async function consumeAutoplayIntent(token) {
+  if (token !== bootToken || route.query?.autoplay !== '1') return
+  const { autoplay, ...query } = route.query
+  try {
+    await router.replace({ query })
+  } catch {
+    // The route is already usable even if removing this one-time hint fails.
   }
 }
 
@@ -662,11 +680,13 @@ function dismissNotice() {
         <button
           class="ctrl main"
           type="button"
-          :disabled="player.loading && !player.objectUrl"
-          :aria-label="player.playing ? '暂停' : '播放'"
+          :disabled="waitingForAudio"
+          :aria-label="waitingForAudio ? '音频加载中' : player.playing ? '暂停' : '播放'"
+          :aria-busy="waitingForAudio ? 'true' : 'false'"
           @click="player.toggle()"
         >
-          <svg v-if="player.playing" viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
+          <span v-if="waitingForAudio" class="player-loading-spinner" role="status" aria-label="音频加载中" />
+          <svg v-else-if="player.playing" viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
             <rect x="6" y="5" width="4" height="14" rx="1" />
             <rect x="14" y="5" width="4" height="14" rx="1" />
           </svg>
@@ -735,5 +755,16 @@ function dismissNotice() {
 .seek-hint {
   margin: 0;
   font-size: 12px;
+}
+.player-loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: player-loading-spin 0.8s linear infinite;
+}
+@keyframes player-loading-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

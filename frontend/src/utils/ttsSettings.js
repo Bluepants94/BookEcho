@@ -2,6 +2,7 @@ const STORAGE_KEY = 'bookecho_tts_settings'
 const CACHE_STORAGE_KEY = 'bookecho_cache_settings'
 /** Increment when decoded audio bytes or cache interpretation changes. */
 const AUDIO_CACHE_FORMAT_VERSION = 'v2'
+const SYNTHESIS_SPEED = 1
 
 /** Hardcoded IndexedDB eviction bound — not user-facing. */
 const INTERNAL_MAX_CACHED_SEGMENTS = 240
@@ -11,7 +12,6 @@ const DEFAULTS = {
   api_key: '',
   model: '',
   voice: '',
-  speed: 1,
   provider: 'auto',
   style: '',
   audio_format: 'pcm16',
@@ -28,8 +28,11 @@ export function loadTtsSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULTS }
+    const parsed = JSON.parse(raw)
+    const { speed: _legacySpeed, ...saved } =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
     // Merge saved values over empty defaults (no vendor defaults).
-    return { ...DEFAULTS, ...JSON.parse(raw) }
+    return { ...DEFAULTS, ...saved }
   } catch {
     return { ...DEFAULTS }
   }
@@ -41,7 +44,6 @@ export function saveTtsSettings(settings) {
     api_key: settings.api_key || '',
     model: settings.model || '',
     voice: settings.voice || '',
-    speed: Number(settings.speed) || 1,
     provider: settings.provider || 'auto',
     style: settings.style || '',
     audio_format: settings.audio_format || 'pcm16',
@@ -113,7 +115,6 @@ export function getTtsCacheFingerprint(settings = loadTtsSettings()) {
   const voice = String(settings.voice || '')
   const style = String(settings.style || '')
   const audioFormat = String(settings.audio_format || 'pcm16')
-  const speed = Number(settings.speed) || 1
   const keyToken = hashApiKey(settings.api_key || '')
 
   return [
@@ -124,7 +125,7 @@ export function getTtsCacheFingerprint(settings = loadTtsSettings()) {
     voice,
     style,
     audioFormat,
-    String(speed),
+    String(SYNTHESIS_SPEED),
     keyToken,
   ].join('|')
 }

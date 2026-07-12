@@ -88,11 +88,6 @@ async function save() {
           <option value="wav">wav</option>
         </select>
       </label>
-      <label class="field">
-        <span>默认倍速 {{ form.speed }}x</span>
-        <input v-model.number="form.speed" type="range" min="0.5" max="2" step="0.25" />
-      </label>
-
       <div class="settings-divider" role="separator" />
       <h3 class="settings-subhead">音频缓存窗口</h3>
       <p class="muted settings-hint">

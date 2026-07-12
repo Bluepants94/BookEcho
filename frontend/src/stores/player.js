@@ -566,8 +566,8 @@ export const usePlayerStore = defineStore('player', {
       })
     },
 
-    buildTtsBody(segmentIndex, { bookId, chapterId, segments, text } = {}) {
-      const tts = loadTtsSettings()
+    buildTtsBody(segmentIndex, { bookId, chapterId, segments, text, ttsSnapshot = loadTtsSettings() } = {}) {
+      const tts = ttsSnapshot
       const segs = segments || this.segments
       const segment = segs[segmentIndex]
       return {
@@ -580,7 +580,7 @@ export const usePlayerStore = defineStore('player', {
         api_key: tts.api_key,
         model: tts.model,
         voice: tts.voice,
-        speed: tts.speed,
+        speed: 1,
         provider: tts.provider,
         style: tts.style,
         audio_format: tts.audio_format,
@@ -600,23 +600,13 @@ export const usePlayerStore = defineStore('player', {
       // Freeze TTS settings + fingerprint at synthesize-start so cache key matches body.
       const ttsSnapshot = loadTtsSettings()
       const fingerprint = getTtsCacheFingerprint(ttsSnapshot)
-      const segs = segments
-      const segment = segs[segmentIndex]
-      const body = {
-        book_id: bookId,
-        chapter_id: chapterId,
-        segment_index: segmentIndex,
-        segment_id: segment?.id,
-        text: options.text ?? segment?.text,
-        base_url: ttsSnapshot.base_url,
-        api_key: ttsSnapshot.api_key,
-        model: ttsSnapshot.model,
-        voice: ttsSnapshot.voice,
-        speed: ttsSnapshot.speed,
-        provider: ttsSnapshot.provider,
-        style: ttsSnapshot.style,
-        audio_format: ttsSnapshot.audio_format,
-      }
+      const body = this.buildTtsBody(segmentIndex, {
+        bookId,
+        chapterId,
+        segments,
+        text: options.text,
+        ttsSnapshot,
+      })
 
       const cached = await getCachedAudio(fingerprint, bookId, chapterId, segmentIndex)
       if (cached) return asPlayableAudioBlob(cached, body.audio_format)
@@ -997,8 +987,9 @@ export const usePlayerStore = defineStore('player', {
         this.userStartedPlayback = true
       }
 
+      let opening
       try {
-        await this.open({
+        opening = this.open({
           bookId,
           chapterId: nextChapter.id,
           bookTitle,
@@ -1013,16 +1004,53 @@ export const usePlayerStore = defineStore('player', {
         throw e
       }
 
-      // Sync route after open so URL matches the playing chapter.
-      // autoplayContinuity / sameTrack short-circuit keeps PlayerView from re-opening.
+      // Attach a rejection handler before routing. A route guard may take longer
+      // than chapter loading, and the original open() rejection must never become
+      // unhandled while navigation is in progress.
+      const openingResult = Promise.resolve(opening).then(
+        () => ({ ok: true }),
+        (error) => ({ ok: false, error }),
+      )
+
+      // Sync route as soon as open() has initialized the new chapter state so
+      // auto-advance also moves listeners who started from another page.
+      // Only a missing router module is non-fatal outside the app; once obtained,
+      // a rejected replacement must stop the new audio session and surface an error.
+      let router = null
       try {
-        const { default: router } = await import('@/router')
-        const target = `/player/${bookId}/${nextChapter.id}`
-        if (router.currentRoute?.value?.fullPath !== target) {
-          await router.replace(target)
-        }
+        ({ default: router } = await import('@/router'))
       } catch {
         // router may be unavailable in non-app contexts
+      }
+
+      let routeFailed = false
+      let routeError = null
+      if (router) {
+        const target = `/player/${bookId}/${nextChapter.id}`
+        if (router.currentRoute?.value?.fullPath !== target) {
+          try {
+            await router.replace(target)
+          } catch (error) {
+            routeFailed = true
+            routeError = error
+          }
+        }
+      }
+
+      if (routeFailed) {
+        // Invalidate the in-flight open() so its async work aborts early.
+        this.sessionId += 1
+        this.stopHard()
+        this.autoplayContinuity = false
+        this.userStartedPlayback = false
+        this.error = routeError?.message || '切换章节失败'
+        throw routeError
+      }
+
+      const result = await openingResult
+      if (!result.ok) {
+        this.autoplayContinuity = false
+        throw result.error
       }
       return true
     },
@@ -1075,8 +1103,11 @@ export const usePlayerStore = defineStore('player', {
         if (!advanced) {
           this.autoplayContinuity = false
           this.playing = false
-          this.saveProgress(true)
         }
+      } catch (err) {
+        this.autoplayContinuity = false
+        this.playing = false
+        this.error = err.message || '播放失败'
       } finally {
         this.advanceLock = false
       }

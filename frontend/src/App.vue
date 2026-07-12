@@ -11,7 +11,7 @@ const auth = useAuthStore()
 const player = usePlayerStore()
 
 const hideChrome = computed(() => Boolean(route.meta?.hideChrome))
-const showMini = computed(() => route.name === 'home' && player.hasTrack)
+const showMini = computed(() => (route.name === 'home' || route.name === 'book') && player.hasTrack)
 
 onMounted(() => {
   auth.bootstrap()
