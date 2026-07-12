@@ -1,0 +1,64 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.pyo
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+coverage/
+*.local
+
+# Runtime / data
+data/
+backend/data/
+backend/tests/_tmp_data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Temp / scratch patches
+_tmp*
+tmp_*
+*_tmp.py
+_patch_*.py
+_verify_*.py
+*.tmp
+*.bak
+*.orig
+*~
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tooling / local dumps
+.codegraph/
+.agents/
+*.txt
+!requirements.txt
+!README.txt
+
+# Local agent registry / orchestration state
+agent_config/
+
