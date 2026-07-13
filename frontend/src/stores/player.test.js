@@ -82,6 +82,7 @@ describe('player chapter auto-advance', () => {
       { id: 'chapter-2', title: 'Two', index: 1 },
     ]
     player.open = vi.fn(() => opening.promise)
+    router.currentRoute.value = { name: 'player', fullPath: '/player/book-1/chapter-1' }
 
     const advancing = player.playNextChapter({ autoplay: true })
 
@@ -100,6 +101,31 @@ describe('player chapter auto-advance', () => {
     await expect(advancing).resolves.toBe(true)
   })
 
+  it('does not navigate when auto-advance fires from a non-player route', async () => {
+    const player = usePlayerStore()
+    const opening = deferred()
+    player.bookId = 'book-1'
+    player.bookTitle = 'Example book'
+    player.chapterId = 'chapter-1'
+    player.chapterOrderIndex = 0
+    player.chapterList = [
+      { id: 'chapter-1', title: 'One', index: 0 },
+      { id: 'chapter-2', title: 'Two', index: 1 },
+    ]
+    player.open = vi.fn(() => opening.promise)
+    router.currentRoute.value = { name: 'home', fullPath: '/' }
+
+    const advancing = player.playNextChapter({ autoplay: true })
+    opening.resolve()
+    await advancing
+
+    expect(router.replace).not.toHaveBeenCalled()
+    expect(player.open).toHaveBeenCalledWith(expect.objectContaining({
+      chapterId: 'chapter-2',
+      autoplay: true,
+    }))
+  })
+
   it('stops autoplay continuity and surfaces a route-replace failure after waiting for open', async () => {
     const player = usePlayerStore()
     const opening = deferred()
@@ -114,14 +140,19 @@ describe('player chapter auto-advance', () => {
       { id: 'chapter-2', title: 'Two', index: 1 },
     ]
     player.open = vi.fn(() => opening.promise)
+    router.currentRoute.value = { name: 'player', fullPath: '/player/book-1/chapter-1' }
     router.replace.mockRejectedValue(routeError)
 
     const advancing = player.playNextChapter({ autoplay: true })
+    // Attach a handler before the rejection can fire so Node never flags it
+    // as unhandled while we wait for router.replace to be called below.
+    const handled = advancing.catch(() => {})
     await vi.waitFor(() => {
       expect(router.replace).toHaveBeenCalledWith('/player/book-1/chapter-2')
     })
     opening.reject(openError)
 
+    await handled
     await expect(advancing).rejects.toBe(routeError)
     expect(player.autoplayContinuity).toBe(false)
     expect(player.error).toBe('无法进入下一章')

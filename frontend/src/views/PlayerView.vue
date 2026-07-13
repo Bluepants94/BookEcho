@@ -38,7 +38,9 @@ const progressStyle = computed(() => ({
 
 const canSeek = computed(() => Number(player.chapterDuration) > 0)
 
-const waitingForAudio = computed(() => player.loading && !player.objectUrl)
+const waitingForAudio = computed(() =>
+  (player.chapterOpening || player.audioLoading) && !player.objectUrl,
+)
 
 const durationLabel = computed(() => {
   if (!canSeek.value) return '时长未知'
@@ -437,6 +439,19 @@ watch(
   },
 )
 
+// Content is ready as soon as segments arrive (audio may still be loading).
+// Mirror auto-advance into the reader without waiting for a route change.
+watch(
+  () => player.segments.length,
+  async () => {
+    if (!player.chapterOpening && player.segments.length) {
+      ready.value = true
+      await nextTick()
+      scrollActiveIntoView(false)
+    }
+  },
+)
+
 // Light follow while time advances (e.g. after seek within segment re-centers if scrolled away).
 watch(
   () => Math.floor(player.currentTime),
@@ -552,7 +567,7 @@ function dismissNotice() {
       aria-label="章节正文"
       @scroll.passive="onReaderScroll"
     >
-      <p v-if="!ready" class="muted center reader-status">加载中…</p>
+      <p v-if="player.chapterOpening && !player.segments.length" class="muted center reader-status">加载中…</p>
       <p v-else-if="!player.segments.length" class="muted center reader-status">暂无段落</p>
       <template v-else>
         <button
@@ -672,7 +687,7 @@ function dismissNotice() {
         </div>
 
         <div class="controls-main">
-        <button class="ctrl" type="button" :disabled="!player.canPrev || player.loading" aria-label="上一段" @click="player.prev()">
+        <button class="ctrl" type="button" :disabled="!player.canPrev || waitingForAudio" aria-label="上一段" @click="player.prev()">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
             <path d="M8 6H6v12h2V6Zm10 .5L11.5 12 18 17.5v-11Z" />
           </svg>
@@ -694,7 +709,7 @@ function dismissNotice() {
             <path d="M8 5.5v13l11-6.5-11-6.5Z" />
           </svg>
         </button>
-        <button class="ctrl" type="button" :disabled="!player.canAdvance || player.loading" aria-label="下一段" @click="player.next()">
+        <button class="ctrl" type="button" :disabled="!player.canAdvance || waitingForAudio" aria-label="下一段" @click="player.next()">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
             <path d="M16 6h2v12h-2V6ZM6 6.5v11L14.5 12 6 6.5Z" />
           </svg>

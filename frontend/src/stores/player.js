@@ -79,6 +79,10 @@ export const usePlayerStore = defineStore('player', {
     duration: 0,
     playing: false,
     loading: false,
+    /** True while chapter text/segments are being fetched in open(). */
+    chapterOpening: false,
+    /** True while a segment audio blob is being synthesized/loaded. */
+    audioLoading: false,
     error: '',
     speed: 1,
     audio: null,
@@ -406,6 +410,9 @@ export const usePlayerStore = defineStore('player', {
         this.objectUrl = ''
       }
       this.playing = false
+      // Clear audioLoading here so a superseded in-flight loadSegment (whose
+      // `token !== this.loadToken` finally no longer runs) cannot leave it stuck.
+      this.audioLoading = false
       this.currentTime = 0
       this.duration = 0
     },
@@ -485,6 +492,7 @@ export const usePlayerStore = defineStore('player', {
       this.resumeOffset = Number(offset) || 0
       this.error = ''
       this.loading = true
+      this.chapterOpening = true
 
       try {
         await this.ensureChapterList(bookId, chapterList)
@@ -500,6 +508,7 @@ export const usePlayerStore = defineStore('player', {
 
         this.segments = normalizeList(segs)
         this.resetSegmentDurations(this.segments.length)
+        this.chapterOpening = false
         if (!this.segments.length) {
           throw new Error('本章暂无可用段落')
         }
@@ -526,7 +535,10 @@ export const usePlayerStore = defineStore('player', {
         this.error = e.message || '打开播放器失败'
         throw e
       } finally {
-        if (sessionId === this.sessionId) this.loading = false
+        if (sessionId === this.sessionId) {
+          this.loading = false
+          this.chapterOpening = false
+        }
       }
     },
 
@@ -658,8 +670,8 @@ export const usePlayerStore = defineStore('player', {
       const idx = this.chapterOrderIndex
       const list = this.chapterList || []
       if (idx < 0 || !list.length) return []
-      // Window: current + next N chapters (forward-only).
-      const start = idx
+      // Window: current ± cache_chapters (forward + already-played).
+      const start = Math.max(0, idx - cfg.cache_chapters)
       const end = Math.min(list.length - 1, idx + cfg.cache_chapters)
       const prefixes = []
       for (let i = start; i <= end; i += 1) {
@@ -674,8 +686,8 @@ export const usePlayerStore = defineStore('player', {
       const idx = this.chapterOrderIndex
       const list = this.chapterList || []
       if (idx < 0 || !list.length) return []
-      // Window: current + next N chapters (forward-only).
-      const start = idx
+      // Window: current ± cache_chapters (forward + already-played).
+      const start = Math.max(0, idx - cfg.cache_chapters)
       const end = Math.min(list.length - 1, idx + cfg.cache_chapters)
       const ids = []
       for (let i = start; i <= end; i += 1) {
@@ -685,7 +697,8 @@ export const usePlayerStore = defineStore('player', {
     },
 
     /**
-     * Chapter-window cache: current + next N chapters (default N=3).
+     * Chapter-window prune window: current ± cache_chapters (default 3).
+     * Prefetch order remains forward-only (current + next 1..N).
      * Triggered after user clicks play. Serial TTS to avoid flooding the API.
      */
     async ensureChapterWindowCache() {
@@ -787,6 +800,7 @@ export const usePlayerStore = defineStore('player', {
       const mediaGen = this.mediaGeneration
       this.segmentIndex = index
       this.loading = true
+      this.audioLoading = true
       this.error = ''
 
       try {
@@ -889,6 +903,7 @@ export const usePlayerStore = defineStore('player', {
       } finally {
         if (token === this.loadToken && sessionId === this.sessionId) {
           this.loading = false
+          this.audioLoading = false
         }
       }
     },
@@ -1027,7 +1042,11 @@ export const usePlayerStore = defineStore('player', {
       let routeError = null
       if (router) {
         const target = `/player/${bookId}/${nextChapter.id}`
-        if (router.currentRoute?.value?.fullPath !== target) {
+        // Silent sync: only update the URL when already on the player page so
+        // auto-advance from other pages never hijacks navigation.
+        const currentRoute = router.currentRoute?.value
+        const isPlayerRoute = currentRoute?.name === 'player'
+        if (isPlayerRoute && currentRoute?.fullPath !== target) {
           try {
             await router.replace(target)
           } catch (error) {

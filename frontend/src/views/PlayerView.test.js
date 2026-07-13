@@ -63,6 +63,8 @@ function resetPlayer(overrides = {}) {
     currentTime: 0,
     speed: 1,
     loading: false,
+    chapterOpening: false,
+    audioLoading: false,
     playing: false,
     objectUrl: '',
     userStartedPlayback: false,
@@ -89,6 +91,11 @@ describe('PlayerView', () => {
     route.fullPath = '/player/book-1/chapter-1'
     router.replace.mockReset()
     router.replace.mockResolvedValue()
+    // jsdom does not implement Element.scrollIntoView; stub it so watcher-driven
+    // scroll-follow does not throw during component tests.
+    if (typeof window.Element.prototype.scrollIntoView !== 'function') {
+      window.Element.prototype.scrollIntoView = function scrollIntoView() {}
+    }
     resetPlayer()
   })
 
@@ -149,7 +156,7 @@ describe('PlayerView', () => {
   })
 
   it('updates the same control from busy loading to normal playback state', async () => {
-    resetPlayer({ loading: true })
+    resetPlayer({ audioLoading: true })
 
     const wrapper = mount(PlayerView)
     await flushPromises()
@@ -160,7 +167,7 @@ describe('PlayerView', () => {
     expect(control.attributes()).toHaveProperty('disabled')
     expect(control.find('.player-loading-spinner').exists()).toBe(true)
 
-    player.loading = false
+    player.audioLoading = false
     player.objectUrl = 'blob:recovered'
     await nextTick()
 
@@ -169,6 +176,35 @@ describe('PlayerView', () => {
     expect(control.attributes()).not.toHaveProperty('disabled')
     expect(control.find('.player-loading-spinner').exists()).toBe(false)
     expect(control.find('svg').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('renders chapter text as soon as segments arrive, before audio is ready', async () => {
+    resetPlayer({ chapterOpening: true, segments: [] })
+
+    const wrapper = mount(PlayerView)
+    await flushPromises()
+
+    // Loading text shows while chapter body is still being fetched.
+    expect(wrapper.find('.reader-status').text()).toContain('加载中')
+
+    // Segments arrive — chapter body renders even though audio is still loading.
+    player.chapterOpening = false
+    player.segments = [{ id: 'segment-1', text: '第一段正文' }]
+    player.audioLoading = true
+    await nextTick()
+
+    expect(wrapper.find('.reader-status').exists()).toBe(false)
+    expect(wrapper.findAll('.reader-seg').length).toBe(1)
+
+    // Play button still shows spinner because audio is still loading.
+    const control = wrapper.get('.ctrl.main')
+    expect(control.find('.player-loading-spinner').exists()).toBe(true)
+
+    player.audioLoading = false
+    player.objectUrl = 'blob:ready'
+    await nextTick()
+    expect(control.find('.player-loading-spinner').exists()).toBe(false)
     wrapper.unmount()
   })
 })
