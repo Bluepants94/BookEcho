@@ -33,6 +33,19 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=6, max_length=128)
 
 
+class UserTtsSettings(BaseModel):
+    """Per-user TTS + cache preferences persisted server-side."""
+
+    base_url: str = Field(default="", max_length=512)
+    api_key: str = Field(default="", max_length=512)
+    model: str = Field(default="", max_length=128)
+    voice: str = Field(default="", max_length=64)
+    provider: str = Field(default="auto", max_length=32)
+    style: str = Field(default="", max_length=1000)
+    audio_format: str = Field(default="pcm16", max_length=32)
+    cache_chapters: int = Field(default=3, ge=0, le=10)
+
+
 class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=6, max_length=128)
     role: Literal["admin", "user"] | None = None

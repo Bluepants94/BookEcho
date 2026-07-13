@@ -6,6 +6,7 @@ import LoadingState from '@/components/LoadingState.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { booksApi, playbackApi } from '@/api/client'
 import { useBooksStore } from '@/stores/books'
+import { usePlayerStore } from '@/stores/player'
 import { listCachedChapterIds } from '@/utils/audioCache'
 import { getTtsCacheFingerprint } from '@/utils/ttsSettings'
 
@@ -14,6 +15,7 @@ const CHAPTER_PAGE_SIZE = 50
 const route = useRoute()
 const router = useRouter()
 const books = useBooksStore()
+const player = usePlayerStore()
 const booting = ref(true)
 const deleting = ref(false)
 const actionError = ref('')
@@ -227,10 +229,34 @@ onUnmounted(() => {
   clearPageSelectLeaveTimer()
 })
 
-function openChapter(chapter) {
+async function openChapter(chapter) {
+  if (!chapter?.id || !book.value?.id) return
+  const bookId = book.value.id
+  const chapterList = chapters.value.map((c, index) => ({
+    id: c.id,
+    title: c.title || `第 ${index + 1} 章`,
+    index,
+  }))
+  const found = chapterList.find((c) => String(c.id) === String(chapter.id))
+  const chapterTitle = found?.title || chapter.title || `第 ${(chapter.index ?? 0) + 1} 章`
+
+  // Always update the player store first so MiniPlayer / global chapterTitle
+  // follow immediately when switching chapters from the book detail list
+  // (route navigation alone can lag or short-circuit).
+  try {
+    await player.resumeFromServer(bookId, chapter.id, {
+      bookTitle: book.value.title || player.bookTitle || '',
+      chapterTitle,
+      chapterList,
+      autoplay: true,
+    })
+  } catch {
+    // Still navigate into the player page so the user can retry there.
+  }
+
   router.push({
     name: 'player',
-    params: { bookId: book.value.id, chapterId: chapter.id },
+    params: { bookId, chapterId: chapter.id },
     query: { autoplay: '1' },
   })
 }

@@ -5,7 +5,17 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User, UserRole
-from app.schemas import MessageOut, PasswordChange, PublicSettingsOut, Token, UserCreate, UserLogin, UserOut
+from app.schemas import (
+    MessageOut,
+    PasswordChange,
+    PublicSettingsOut,
+    Token,
+    UserCreate,
+    UserLogin,
+    UserOut,
+    UserTtsSettings,
+)
+from app.services.user_settings import get_user_tts_settings, save_user_tts_settings
 from app.services.auth import (
     authenticate_user,
     create_access_token,
@@ -122,4 +132,19 @@ def change_password(
     user.password_hash = hash_password(payload.new_password)
     db.commit()
     return MessageOut(message="密码已修改")
+
+
+@router.get("/tts-settings", response_model=UserTtsSettings)
+def get_tts_settings(user: Annotated[User, Depends(get_current_user)]) -> UserTtsSettings:
+    return UserTtsSettings(**get_user_tts_settings(user))
+
+
+@router.put("/tts-settings", response_model=UserTtsSettings)
+def put_tts_settings(
+    payload: UserTtsSettings,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> UserTtsSettings:
+    saved = save_user_tts_settings(db, user, payload.model_dump())
+    return UserTtsSettings(**saved)
 

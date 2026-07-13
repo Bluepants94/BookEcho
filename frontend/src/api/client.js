@@ -121,6 +121,8 @@ export const authApi = {
   register: (data) => api('/auth/register', { method: 'POST', body: data, auth: false }),
   me: () => api('/auth/me'),
   changePassword: (data) => api('/auth/change-password', { method: 'POST', body: data }),
+  getTtsSettings: () => api('/auth/tts-settings'),
+  putTtsSettings: (data) => api('/auth/tts-settings', { method: 'PUT', body: data }),
   publicSettings: async () => {
     try {
       return await api('/auth/registration-status', { auth: false })

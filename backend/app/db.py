@@ -44,12 +44,16 @@ def _ensure_sqlite_columns() -> None:
         tables = set(inspector.get_table_names())
     except Exception:  # noqa: BLE001
         return
-    if "books" not in tables:
-        return
-    columns = {col["name"] for col in inspector.get_columns("books")}
-    if "source_path" not in columns:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE books ADD COLUMN source_path VARCHAR(512)"))
+    if "books" in tables:
+        columns = {col["name"] for col in inspector.get_columns("books")}
+        if "source_path" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE books ADD COLUMN source_path VARCHAR(512)"))
+    if "users" in tables:
+        columns = {col["name"] for col in inspector.get_columns("users")}
+        if "tts_settings_json" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN tts_settings_json TEXT"))
 
 
 def init_db() -> None:

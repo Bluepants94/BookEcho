@@ -2,14 +2,12 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore, SPEEDS } from '@/stores/player'
-import { useSettingsStore } from '@/stores/settings'
 import { booksApi } from '@/api/client'
 import { formatTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
-const settings = useSettingsStore()
 const ready = ref(false)
 const localError = ref('')
 const readerEl = ref(null)
@@ -527,9 +525,6 @@ function goBack() {
   else router.push('/')
 }
 
-function dismissNotice() {
-  settings.clearTtsNotice()
-}
 </script>
 
 <template>
@@ -551,15 +546,6 @@ function dismissNotice() {
         </div>
       </div>
     </header>
-
-    <div
-      v-if="settings.ttsUpdatedNotice"
-      class="player-notice"
-      role="status"
-    >
-      <span>{{ settings.ttsUpdatedNotice }}</span>
-      <button type="button" class="notice-close" aria-label="关闭提示" @click="dismissNotice">×</button>
-    </div>
 
     <section
       ref="readerEl"

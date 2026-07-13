@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { usePlayerStore } from '@/stores/player'
@@ -9,8 +9,9 @@ const settings = useSettingsStore()
 const player = usePlayerStore()
 const form = reactive({ ...settings.tts })
 const cacheForm = reactive({ ...settings.cache })
-const saved = ref(false)
-const savedMsg = ref('')
+const saving = ref(false)
+const toastVisible = ref(false)
+let toastTimer = null
 
 const showMimoStyle = computed(() => isMimoProvider(form))
 
@@ -21,31 +22,56 @@ watch(
   },
 )
 
+function showToast() {
+  toastVisible.value = true
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toastVisible.value = false
+    toastTimer = null
+  }, 1600)
+}
+
 async function save() {
-  settings.updateCache({
-    cache_chapters: cacheForm.cache_chapters,
-  })
-  const { fingerprintChanged } = settings.updateTts(form)
-  // Keep reactive forms in sync with normalized values.
+  if (saving.value) return
+  saving.value = true
+  try {
+    // Cache window changes never invalidate audio.
+    settings.updateCache({
+      cache_chapters: cacheForm.cache_chapters,
+    })
+    // Only TTS parameter changes can invalidate the audio cache fingerprint.
+    const { fingerprintChanged } = settings.updateTts(form)
+    Object.assign(form, settings.tts)
+    Object.assign(cacheForm, settings.cache)
+
+    // Persist to server so rebuilds / browser clears do not drop settings.
+    await settings.persistToServer()
+
+    if (fingerprintChanged) {
+      await player.invalidateAfterSettingsChange()
+    }
+    // Never surface long instructional copy — just a brief "已保存" toast.
+    showToast()
+  } finally {
+    saving.value = false
+  }
+}
+
+onMounted(async () => {
+  await settings.hydrateFromServer()
   Object.assign(form, settings.tts)
   Object.assign(cacheForm, settings.cache)
+})
 
-  if (fingerprintChanged) {
-    await player.invalidateAfterSettingsChange()
-    savedMsg.value = '已保存：TTS 变更后需重新合成，请手动点击播放'
-  } else {
-    savedMsg.value = '已保存：点击播放后按窗口预缓存音频'
-  }
-  saved.value = true
-  setTimeout(() => {
-    saved.value = false
-  }, 2200)
-}
+onUnmounted(() => {
+  if (toastTimer) clearTimeout(toastTimer)
+})
 </script>
 
 <template>
   <div class="page">
     <PageHeader title="API 设置" back />
+    <div v-if="toastVisible" class="settings-toast" role="status" aria-live="polite">已保存</div>
     <form class="card form-card" @submit.prevent="save">
       <label class="field">
         <span>Provider</span>
@@ -63,7 +89,7 @@ async function save() {
         <span>API Key</span>
         <input v-model.trim="form.api_key" type="password" placeholder="请输入 API Key" />
       </label>
-      <p class="muted settings-hint">API Key 仅保存在本机浏览器本地存储，请勿在公共设备填写；清除站点数据会一并删除。</p>
+      <p class="muted settings-hint">API 设置会同步到服务器，登录后可跨设备恢复；请勿在公共设备填写密钥。</p>
       <label class="field">
         <span>Model</span>
         <input v-model.trim="form.model" placeholder="请输入模型名" />
@@ -91,7 +117,7 @@ async function save() {
       <div class="settings-divider" role="separator" />
       <h3 class="settings-subhead">音频缓存窗口</h3>
       <p class="muted settings-hint">
-        点击播放后按章节窗口预缓存音频；修改 TTS 后旧缓存失效，需重新合成。
+        点击播放后按章节窗口预缓存音频；仅修改 TTS 参数并保存时才会使旧音频缓存失效。
       </p>
       <label class="field">
         <span>缓存章数</span>
@@ -104,8 +130,9 @@ async function save() {
         />
       </label>
 
-      <button class="btn primary block" type="submit">保存</button>
-      <p v-if="saved" class="form-ok">{{ savedMsg || '已保存' }}</p>
+      <button class="btn primary block" type="submit" :disabled="saving">
+        {{ saving ? '保存中…' : '保存' }}
+      </button>
     </form>
   </div>
 </template>

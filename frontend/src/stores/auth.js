@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { authApi, setToken, getToken } from '@/api/client'
+import { useSettingsStore } from '@/stores/settings'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -21,6 +22,11 @@ export const useAuthStore = defineStore('auth', {
       try {
         if (this.token) {
           this.user = await authApi.me()
+          try {
+            await useSettingsStore().hydrateFromServer()
+          } catch {
+            // settings hydrate is best-effort
+          }
         }
       } catch {
         this.token = ''
@@ -41,6 +47,11 @@ export const useAuthStore = defineStore('auth', {
         this.token = token
         setToken(token)
         this.user = data.user || (await authApi.me())
+        try {
+          await useSettingsStore().hydrateFromServer()
+        } catch {
+          // ignore
+        }
         return true
       } catch (e) {
         this.error = e.message || '登录失败'
@@ -59,6 +70,11 @@ export const useAuthStore = defineStore('auth', {
           this.token = token
           setToken(token)
           this.user = data.user || (await authApi.me())
+          try {
+            await useSettingsStore().hydrateFromServer()
+          } catch {
+            // ignore
+          }
         } else {
           await this.login({ username: form.username, password: form.password })
         }

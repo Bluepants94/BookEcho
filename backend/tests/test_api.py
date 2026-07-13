@@ -555,3 +555,35 @@ def test_book_response_hides_source_path(client: TestClient):
     detail = client.get(f"/api/books/{up.json()['id']}", headers=_auth(token)).json()
     assert "source_path" not in detail
 
+
+
+
+def test_user_tts_settings_persist(client: TestClient):
+    _register(client, "ttsuser")
+    token = _login(client, "ttsuser")
+    headers = _auth(token)
+
+    empty = client.get("/api/auth/tts-settings", headers=headers)
+    assert empty.status_code == 200, empty.text
+    body = empty.json()
+    assert body["base_url"] == ""
+    assert body["cache_chapters"] == 3
+
+    payload = {
+        "base_url": "https://tts.example.test/v1",
+        "api_key": "secret-key",
+        "model": "voice-1",
+        "voice": "alloy",
+        "provider": "openai",
+        "style": "",
+        "audio_format": "mp3",
+        "cache_chapters": 5,
+    }
+    saved = client.put("/api/auth/tts-settings", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["api_key"] == "secret-key"
+    assert saved.json()["cache_chapters"] == 5
+
+    again = client.get("/api/auth/tts-settings", headers=headers)
+    assert again.status_code == 200, again.text
+    assert again.json() == saved.json()

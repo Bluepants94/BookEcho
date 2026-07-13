@@ -1,11 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { fetchBook, getProgress, listCachedChapterIds, routerPush } = vi.hoisted(() => ({
+const { fetchBook, getProgress, listCachedChapterIds, routerPush, resumeFromServer } = vi.hoisted(() => ({
   fetchBook: vi.fn(),
   getProgress: vi.fn(),
   listCachedChapterIds: vi.fn(),
   routerPush: vi.fn(),
+  resumeFromServer: vi.fn().mockResolvedValue(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -18,6 +19,17 @@ vi.mock('@/stores/books', () => ({
     currentBook: { id: 'book-1', title: '测试书籍' },
     chapters: [{ id: 'chapter-1', title: '未缓存章节' }],
     fetchBook,
+  }),
+}))
+
+vi.mock('@/stores/player', () => ({
+  usePlayerStore: () => ({
+    bookId: null,
+    chapterId: null,
+    bookTitle: '',
+    chapterTitle: '',
+    hasTrack: false,
+    resumeFromServer,
   }),
 }))
 
@@ -39,6 +51,7 @@ describe('BookDetailView', () => {
     fetchBook.mockResolvedValue()
     getProgress.mockResolvedValue(null)
     listCachedChapterIds.mockReturnValue([])
+    resumeFromServer.mockResolvedValue()
     wrapper = mount(BookDetailView, {
       global: {
         stubs: {
@@ -54,11 +67,21 @@ describe('BookDetailView', () => {
     wrapper?.unmount()
   })
 
-  it('clicking an uncached chapter immediately opens the player with autoplay intent', async () => {
+  it('clicking an uncached chapter switches the player store then opens the player with autoplay intent', async () => {
     await flushPromises()
 
     await wrapper.get('[data-chapter-id="chapter-1"]').trigger('click')
+    await flushPromises()
 
+    expect(resumeFromServer).toHaveBeenCalledWith(
+      'book-1',
+      'chapter-1',
+      expect.objectContaining({
+        bookTitle: '测试书籍',
+        chapterTitle: '未缓存章节',
+        autoplay: true,
+      }),
+    )
     expect(routerPush).toHaveBeenCalledWith({
       name: 'player',
       params: { bookId: 'book-1', chapterId: 'chapter-1' },

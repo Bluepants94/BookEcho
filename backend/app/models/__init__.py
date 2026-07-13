@@ -50,6 +50,8 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), default=UserRole.user.value, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Per-user TTS / cache preferences (JSON string). Survives browser clears.
+    tts_settings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     books: Mapped[list["Book"]] = relationship(back_populates="owner")
     progress_records: Mapped[list["PlaybackProgress"]] = relationship(back_populates="user")
