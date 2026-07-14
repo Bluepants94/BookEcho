@@ -28,7 +28,7 @@ async function submit() {
     fd.append('file', file.value)
     fd.append('visibility', 'private')
     const result = await booksApi.upload(fd)
-    message.value = '上传成功，正在跳转…'
+    message.value = '上传成功，后台解析中，正在跳转…'
     const id = result?.id || result?.book_id
     if (id) router.push(`/books/${id}`)
     else router.push('/')

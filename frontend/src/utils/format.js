@@ -35,27 +35,13 @@ export function normalizeList(payload) {
 }
 
 export function normalizeBook(book = {}) {
-  const visibility = book.visibility || (book.is_public ? 'public' : book.is_public === false ? 'private' : undefined)
-  const isPublic = visibility === 'public' || book.is_public === true || book.scope === 'public'
   return {
     ...book,
-    visibility: visibility || (isPublic ? 'public' : 'private'),
-    is_public: isPublic,
+    visibility: 'private',
+    is_public: false,
   }
 }
 
 export function normalizeBooks(payload) {
   return normalizeList(payload).map(normalizeBook)
-}
-
-export function isPublicBook(book = {}) {
-  return book.visibility === 'public' || book.is_public === true || book.scope === 'public'
-}
-
-export function isMineBook(book = {}, userId) {
-  if (book.scope === 'mine' || book.is_mine === true || book.owned === true) return true
-  if (userId != null && (book.owner_id === userId || book.user_id === userId || book.created_by === userId)) {
-    return true
-  }
-  return !isPublicBook(book)
 }

@@ -160,7 +160,6 @@ export const booksApi = {
   },
   mine: () => api('/books?scope=mine'),
   remove: (id) => api(`/books/${id}`, { method: 'DELETE' }),
-  public: () => api('/books?scope=public'),
 }
 
 export const playbackApi = {
@@ -211,14 +210,6 @@ export const adminApi = {
   settings: () => api('/admin/settings'),
   updateSettings: (data) => api('/admin/settings', { method: 'PUT', body: data }),
   books: () => api('/admin/books'),
-  setBookPublic: (id, isPublic) =>
-    api(`/admin/books/${id}`, {
-      method: 'PATCH',
-      body: {
-        visibility: isPublic ? 'public' : 'private',
-        is_public: Boolean(isPublic),
-      },
-    }),
   deleteBook: (id) => api(`/admin/books/${id}`, { method: 'DELETE' }),
   jobs: () => api('/admin/jobs'),
   system: () => api('/admin/system'),

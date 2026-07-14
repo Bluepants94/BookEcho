@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     tts_allow_private_urls: bool = False
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
+    # Process-local sliding windows. Tune via env if needed.
+    auth_rate_limit_per_minute: int = 30
+    tts_rate_limit_per_minute: int = 120
+    parse_max_workers: int = 2
+    # When true, parse runs in-process immediately (useful for tests).
+    parse_inline: bool = False
 
     @property
     def data_path(self) -> Path:

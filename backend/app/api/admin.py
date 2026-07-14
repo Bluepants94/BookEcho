@@ -20,7 +20,7 @@ from app.schemas import (
     UserUpdate,
 )
 from app.services.auth import get_current_admin, get_user_by_username, hash_password
-from app.services.books import cleanup_book_files
+from app.services.books import cleanup_book_files, cleanup_user_data
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -124,6 +124,7 @@ def delete_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
     if user.role == UserRole.admin.value:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能删除管理员账号")
+    cleanup_user_data(db, user)
     db.delete(user)
     db.commit()
     return MessageOut(message="已删除")

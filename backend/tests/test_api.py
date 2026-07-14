@@ -16,6 +16,7 @@ os.environ.pop("BOOTSTRAP_ADMIN_PASSWORD", None)
 _TEST_DATA_DIR = Path(__file__).resolve().parent / "_tmp_data"
 _TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["DATA_DIR"] = str(_TEST_DATA_DIR)
+os.environ["PARSE_INLINE"] = "true"
 
 from app.config import get_settings
 
@@ -581,9 +582,50 @@ def test_user_tts_settings_persist(client: TestClient):
     }
     saved = client.put("/api/auth/tts-settings", headers=headers, json=payload)
     assert saved.status_code == 200, saved.text
-    assert saved.json()["api_key"] == "secret-key"
+    assert saved.json()["api_key"] != "secret-key"
+    assert saved.json()["api_key"].endswith("-key")
+    assert "*" in saved.json()["api_key"]
     assert saved.json()["cache_chapters"] == 5
 
     again = client.get("/api/auth/tts-settings", headers=headers)
     assert again.status_code == 200, again.text
-    assert again.json() == saved.json()
+    assert again.json()["api_key"] != "secret-key"
+    assert again.json()["api_key"].endswith("-key")
+    assert again.json()["cache_chapters"] == 5
+
+    # Masked placeholder should not wipe stored secret.
+    keep = dict(payload)
+    keep["api_key"] = again.json()["api_key"]
+    keep["model"] = "voice-2"
+    kept = client.put("/api/auth/tts-settings", headers=headers, json=keep)
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["model"] == "voice-2"
+    assert kept.json()["api_key"].endswith("-key")
+
+
+
+def test_admin_delete_user_cleans_books(client: TestClient):
+    assert _register(client, "del_user").status_code == 201
+    assert _register(client, "del_admin").status_code == 201
+    _promote("del_admin")
+    user_token = _login(client, "del_user")
+    admin_token = _login(client, "del_admin")
+
+    content = "第一章\n内容。\n".encode("utf-8")
+    up = client.post(
+        "/api/books",
+        headers=_auth(user_token),
+        files={"file": ("u.txt", content, "text/plain")},
+        data={"title": "U"},
+    )
+    assert up.status_code == 201, up.text
+    book_id = up.json()["id"]
+    assert client.get(f"/api/books/{book_id}", headers=_auth(user_token)).status_code == 200
+
+    users = client.get("/api/admin/users", headers=_auth(admin_token)).json()
+    target = next(u for u in users if u["username"] == "del_user")
+    deleted = client.delete(f"/api/admin/users/{target['id']}", headers=_auth(admin_token))
+    assert deleted.status_code == 200, deleted.text
+
+    books = client.get("/api/admin/books", headers=_auth(admin_token)).json()
+    assert all(b["id"] != book_id for b in books)

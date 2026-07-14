@@ -14,7 +14,8 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/bookecho.db}
       DATA_DIR: ${DATA_DIR:-/data}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:80,http://127.0.0.1,http://127.0.0.1:80}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:25698,http://127.0.0.1:25698,http://localhost,http://127.0.0.1}
+      TTS_ALLOW_PRIVATE_URLS: ${TTS_ALLOW_PRIVATE_URLS:-false}
     volumes:
       - bookecho_data:/data
     networks:

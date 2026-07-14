@@ -15,7 +15,9 @@ from app.schemas import (
     UserOut,
     UserTtsSettings,
 )
-from app.services.user_settings import get_user_tts_settings, save_user_tts_settings
+from app.services.user_settings import get_user_tts_settings_public, save_user_tts_settings
+from app.services.rate_limit import client_ip, limiter
+from app.config import get_settings as get_app_settings
 from app.services.auth import (
     authenticate_user,
     create_access_token,
@@ -62,7 +64,17 @@ async def _extract_login_credentials(request: Request) -> tuple[str, str]:
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(payload: UserCreate, db: Annotated[Session, Depends(get_db)]) -> User:
+def register(
+    payload: UserCreate,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    cfg = get_app_settings()
+    limiter.hit(
+        f"auth:register:{client_ip(request)}",
+        limit=cfg.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     settings = get_or_create_settings(db)
     if not settings.registration_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="当前未开放注册")
@@ -90,12 +102,28 @@ async def login(
     db: Annotated[Session, Depends(get_db)],
 ) -> Token:
     """Accept both form-urlencoded (OAuth2) and JSON body credentials."""
+    cfg = get_app_settings()
+    limiter.hit(
+        f"auth:login:{client_ip(request)}",
+        limit=cfg.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     username, password = await _extract_login_credentials(request)
     return _issue_token(db, username, password)
 
 
 @router.post("/login/json", response_model=Token)
-def login_json(payload: UserLogin, db: Annotated[Session, Depends(get_db)]) -> Token:
+def login_json(
+    payload: UserLogin,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> Token:
+    cfg = get_app_settings()
+    limiter.hit(
+        f"auth:login:{client_ip(request)}",
+        limit=cfg.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     return _issue_token(db, payload.username, payload.password)
 
 
@@ -136,7 +164,7 @@ def change_password(
 
 @router.get("/tts-settings", response_model=UserTtsSettings)
 def get_tts_settings(user: Annotated[User, Depends(get_current_user)]) -> UserTtsSettings:
-    return UserTtsSettings(**get_user_tts_settings(user))
+    return UserTtsSettings(**get_user_tts_settings_public(user))
 
 
 @router.put("/tts-settings", response_model=UserTtsSettings)

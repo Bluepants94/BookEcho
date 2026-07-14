@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 import shutil
 
 from app.config import get_settings
-from app.models import Book, User, UserRole
+from app.models import Book, Job, PlaybackProgress, User, UserRole
 
 
 def user_can_read_book(user: User | None, book: Book) -> bool:
@@ -46,3 +46,20 @@ def cleanup_book_files(book: Book) -> None:
     book_dir = settings.book_dir(owner_id, book.id)
     if book_dir.exists():
         shutil.rmtree(book_dir, ignore_errors=True)
+
+
+def cleanup_user_data(db: Session, user: User) -> int:
+    """Delete a user's books (DB + files) and progress. Returns deleted book count."""
+    books = db.query(Book).filter(Book.owner_id == user.id).all()
+    count = len(books)
+    for book in books:
+        cleanup_book_files(book)
+        db.query(Job).filter(Job.book_id == book.id).delete(synchronize_session=False)
+        db.delete(book)
+    db.query(PlaybackProgress).filter(PlaybackProgress.user_id == user.id).delete(synchronize_session=False)
+    # Best-effort remove user root directory if empty/leftover.
+    settings = get_settings()
+    user_dir = settings.user_dir(user.id)
+    if user_dir.exists():
+        shutil.rmtree(user_dir, ignore_errors=True)
+    return count

@@ -4,7 +4,6 @@ import { normalizeBook, normalizeList } from '@/utils/format'
 
 export const useBooksStore = defineStore('books', {
   state: () => ({
-    publicBooks: [],
     myBooks: [],
     currentBook: null,
     chapters: [],
@@ -16,8 +15,6 @@ export const useBooksStore = defineStore('books', {
       this.loading = true
       this.error = ''
       try {
-        // Public library removed: only private bookshelf.
-        this.publicBooks = []
         const mine = await booksApi.mine()
         this.myBooks = normalizeList(mine).map(normalizeBook)
       } catch (e) {

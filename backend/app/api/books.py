@@ -27,6 +27,7 @@ from app.services.parser import (
     rebuild_book_text_from_parts,
     reparse_stored_text,
 )
+from app.services.parse_jobs import enqueue_book_parse, parse_book_from_bytes
 
 router = APIRouter(prefix="/books", tags=["books"])
 settings = get_settings()
@@ -181,36 +182,29 @@ async def _upload_book_impl(
             detail="书籍文件保存失败",
         ) from exc
 
-    job = Job(type=JobType.parse.value, status=JobStatus.running.value, book_id=book.id, message="解析中")
+    # Default: parse asynchronously so large uploads do not block workers.
+    # Tests / small deployments may set parse_inline=true to finish in-request.
+    job = Job(type=JobType.parse.value, status=JobStatus.pending.value, book_id=book.id, message="排队解析中")
     db.add(job)
-    db.flush()
-
-    try:
-        result = parse_book(data)
-        book.encoding = result.encoding
-        for idx, ch in enumerate(result.chapters):
-            chapter = Chapter(book_id=book.id, index=idx, title=ch.title)
-            db.add(chapter)
-            db.flush()
-            for sidx, seg_text in enumerate(ch.segments):
-                db.add(
-                    Segment(
-                        chapter_id=chapter.id,
-                        index=sidx,
-                        text=seg_text,
-                        char_count=len(seg_text),
-                    )
-                )
-        job.status = JobStatus.success.value
-        job.message = format_parse_job_message(result)
-    except Exception as exc:  # noqa: BLE001
-        job.status = JobStatus.failed.value
-        job.message = f"解析失败: {exc}"
+    if settings.parse_inline:
+        try:
+            parse_book_from_bytes(db, book, job, data)
+        except Exception as exc:  # noqa: BLE001
+            job.status = JobStatus.failed.value
+            job.message = f"解析失败: {exc}"
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="书籍解析失败",
+            ) from exc
         db.commit()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="书籍解析失败") from exc
+        db.refresh(book)
+        return book
 
     db.commit()
     db.refresh(book)
+    db.refresh(job)
+    enqueue_book_parse(book.id, job.id, book.source_path)
     return book
 
 

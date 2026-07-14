@@ -85,6 +85,19 @@ function refreshCacheBadges() {
   }
 }
 
+async function pollChaptersUntilReady(maxAttempts = 20, intervalMs = 500) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    if ((books.chapters || []).length) return true
+    await new Promise((r) => setTimeout(r, intervalMs))
+    try {
+      await books.fetchBook(route.params.id)
+    } catch {
+      // keep polling until timeout
+    }
+  }
+  return (books.chapters || []).length > 0
+}
+
 async function refreshBookProgress() {
   if (!book.value?.id) {
     bookProgress.value = null
@@ -200,6 +213,9 @@ async function scrollLatestChapterIntoView() {
 onMounted(async () => {
   try {
     await books.fetchBook(route.params.id)
+    if (!(books.chapters || []).length) {
+      await pollChaptersUntilReady()
+    }
     await refreshBookProgress()
     refreshCacheBadges()
     focusLatestChapterPage()

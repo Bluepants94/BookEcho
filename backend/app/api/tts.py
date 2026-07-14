@@ -10,6 +10,9 @@ from app.schemas import TTSRequest
 from app.services.auth import get_current_user
 from app.services.books import require_book_read
 from app.services.tts import synthesize_speech
+from app.services.rate_limit import client_ip, limiter
+from app.config import get_settings
+from fastapi import Request
 
 router = APIRouter(prefix="/tts", tags=["tts"])
 
@@ -17,9 +20,16 @@ router = APIRouter(prefix="/tts", tags=["tts"])
 @router.post("/synthesize")
 async def synthesize(
     payload: TTSRequest,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
+    cfg = get_settings()
+    limiter.hit(
+        f"tts:{user.id}:{client_ip(request)}",
+        limit=cfg.tts_rate_limit_per_minute,
+        window_seconds=60,
+    )
     require_book_read(db, payload.book_id, user)
     chapter = (
         db.query(Chapter)
