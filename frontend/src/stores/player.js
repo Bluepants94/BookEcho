@@ -15,6 +15,10 @@ import { normalizeList } from '@/utils/format'
 
 export const SPEEDS = [0.75, 1, 1.25, 1.5, 2]
 
+/** Minimal WAV used to unlock HTMLAudioElement under a real user gesture. */
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
+
 /** Safari needs a real audio/* MIME; empty/octet-stream blobs often fail to decode. */
 function asPlayableAudioBlob(blob, preferredFormat = '') {
   if (!blob) return blob
@@ -94,6 +98,8 @@ export const usePlayerStore = defineStore('player', {
     userStartedPlayback: false,
     /** True while chapter autoplay continuity is in progress (next-chapter open). */
     autoplayContinuity: false,
+    /** True after a gesture-time unlock attempt on the shared Audio element. */
+    playbackUnlocked: false,
     /** Bumped on every open() — stale open/load results must ignore play. */
     sessionId: 0,
     /** Bumped on every loadSegment() — stale async blob loads must not apply. */
@@ -269,6 +275,96 @@ export const usePlayerStore = defineStore('player', {
       const d = await this.probeBlobDuration(blob)
       if (sessionId != null && sessionId !== this.sessionId) return
       if (d > 0) this.setSegmentDuration(index, d)
+    },
+
+    /**
+     * Prime the shared HTMLAudioElement during a user gesture.
+     * Must be called synchronously from the click/tap turn (before any await),
+     * so later async TTS/cache loads can still call audio.play().
+     */
+    unlockAutoplay() {
+      const audio = this.ensureAudio()
+      configureSafariAudioElement(audio)
+      this.playbackUnlocked = true
+      this.userStartedPlayback = true
+      this.autoplayContinuity = true
+      this._unlockToken = (this._unlockToken || 0) + 1
+      const unlockToken = this._unlockToken
+
+      // Prefer unlocking the same element used for real playback (Safari).
+      try {
+        // Avoid fighting an already-live chapter blob; just mark unlocked.
+        if (this.objectUrl && audio.currentSrc) {
+          return true
+        }
+        audio.muted = false
+        audio.volume = 0.01
+        audio.src = SILENT_WAV
+        try {
+          audio.load()
+        } catch {
+          // ignore
+        }
+        const playAttempt = audio.play()
+        if (playAttempt && typeof playAttempt.then === 'function') {
+          void playAttempt
+            .then(() => {
+              // Do not pause if a real chapter blob has already replaced the silent unlock.
+              if (unlockToken !== this._unlockToken) return
+              if (this.objectUrl) return
+              const src = String(audio.currentSrc || audio.src || '')
+              if (!src.startsWith('data:audio/wav')) return
+              try {
+                audio.pause()
+              } catch {
+                // ignore
+              }
+              try {
+                audio.currentTime = 0
+              } catch {
+                // ignore
+              }
+              audio.volume = 1
+            })
+            .catch(() => {
+              try {
+                audio.volume = 1
+              } catch {
+                // ignore
+              }
+            })
+        } else {
+          audio.volume = 1
+        }
+      } catch {
+        try {
+          audio.volume = 1
+        } catch {
+          // ignore
+        }
+      }
+
+      // WebAudio unlock as a second signal for engines that key off AudioContext.
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext
+        if (AC) {
+          if (!this._audioCtx || this._audioCtx.state === 'closed') {
+            this._audioCtx = new AC()
+          }
+          const ctx = this._audioCtx
+          if (ctx.state === 'suspended') {
+            void ctx.resume()
+          }
+          const buffer = ctx.createBuffer(1, 1, 22050)
+          const source = ctx.createBufferSource()
+          source.buffer = buffer
+          source.connect(ctx.destination)
+          source.start(0)
+        }
+      } catch {
+        // ignore
+      }
+      return true
     },
 
     ensureAudio() {
@@ -467,12 +563,41 @@ export const usePlayerStore = defineStore('player', {
       autoplay = false,
       chapterList = null,
     }) {
+      // Best-effort: if open is still in the gesture turn, unlock immediately.
+      // resumeFromServer already unlocks before its first await.
+      if (autoplay && !this.playbackUnlocked) {
+        this.unlockAutoplay()
+      }
       // New session: invalidate any in-flight open/loadSegment from previous book/chapter.
       const sessionId = ++this.sessionId
       this.loadToken += 1
       this.cacheJobToken += 1
 
-      this.stopHard()
+      // Autoplay path keeps the gesture-unlocked Audio element alive. loadSegment
+      // still hard-stops before attaching the real chapter source.
+      if (autoplay) {
+        this.playing = false
+        this.audioLoading = false
+        this.currentTime = 0
+        this.duration = 0
+        if (this.audio) {
+          try {
+            this.audio.pause()
+          } catch {
+            // ignore
+          }
+        }
+        if (this.objectUrl) {
+          try {
+            URL.revokeObjectURL(this.objectUrl)
+          } catch {
+            // ignore
+          }
+          this.objectUrl = ''
+        }
+      } else {
+        this.stopHard()
+      }
       this.stopProgressSync()
       this.prefetching = new Set()
       // Autoplay continuity: set intent immediately so PlayerView bootstrap
@@ -545,6 +670,11 @@ export const usePlayerStore = defineStore('player', {
 
     async resumeFromServer(bookId, chapterId, meta = {}) {
       const wantAutoplay = meta.autoplay === true
+      // CRITICAL: unlock in this synchronous turn while the click gesture is alive.
+      // Any await below will expire browser user-activation for audio.play().
+      if (wantAutoplay) {
+        this.unlockAutoplay()
+      }
       // Stamp identity immediately so PlayerView can treat this as the active
       // chapter and skip a second open() while progress/TTS are still in flight.
       this.bookId = bookId
@@ -572,8 +702,30 @@ export const usePlayerStore = defineStore('player', {
       this.audioLoading = false
       this.userStartedPlayback = wantAutoplay
       this.autoplayContinuity = wantAutoplay
-      // Drop any previous media so mini/full controls show the loading spinner.
-      this.stopHard()
+      // When autoplaying from a gesture, avoid stopHard() here: it would tear down
+      // the same Audio element we just unlocked (esp. Safari). loadSegment still
+      // hard-stops before attaching the real chapter blob.
+      if (wantAutoplay) {
+        this.playing = false
+        this.audioLoading = false
+        if (this.audio) {
+          try {
+            this.audio.pause()
+          } catch {
+            // ignore
+          }
+        }
+        if (this.objectUrl) {
+          try {
+            URL.revokeObjectURL(this.objectUrl)
+          } catch {
+            // ignore
+          }
+          this.objectUrl = ''
+        }
+      } else {
+        this.stopHard()
+      }
 
       let progress = null
       try {
@@ -868,6 +1020,7 @@ export const usePlayerStore = defineStore('player', {
 
         // Attach new media under current generation only after previous is fully stopped.
         // Call load() to force browser to release old resource and load new blob.
+        this._unlockToken = (this._unlockToken || 0) + 1
         this.objectUrl = URL.createObjectURL(blob)
         audio.src = this.objectUrl
         this.applyPlaybackRate(audio)
@@ -909,15 +1062,20 @@ export const usePlayerStore = defineStore('player', {
             }
             this.userStartedPlayback = true
             this.autoplayContinuity = false
-          } catch {
+          } catch (playErr) {
             if (
               token === this.loadToken &&
               sessionId === this.sessionId &&
               mediaGen === this.mediaGeneration
             ) {
               this.playing = false
-              // Interruption / autoplay block — do not leave continuity stuck forever.
-              // Keep userStartedPlayback true so user can retry with toggle.
+              this.autoplayContinuity = false
+              // Keep userStartedPlayback true so the user can retry with toggle.
+              // NotAllowedError usually means gesture unlock failed; leave audio attached.
+              const name = playErr?.name || ''
+              if (name && name !== 'NotAllowedError' && name !== 'AbortError') {
+                this.error = playErr?.message || '自动播放失败'
+              }
             }
           }
         }

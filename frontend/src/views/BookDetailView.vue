@@ -260,6 +260,9 @@ async function openChapter(chapter) {
   // but never wait for TTS/audio before navigating into the player page.
   // Content and audio are independent: the player page can render text as
   // soon as segments arrive while the play control shows a spinner.
+  // Synchronously unlock the shared Audio element while the click activation
+  // is still valid (resumeFromServer also unlocks before its first await).
+  player.unlockAutoplay?.()
   void player
     .resumeFromServer(bookId, chapter.id, {
       bookTitle: book.value.title || player.bookTitle || '',

@@ -47,6 +47,7 @@ vi.mock('@/utils/ttsSettings', () => ({
 }))
 
 import { usePlayerStore } from './player'
+import { booksApi, playbackApi } from '@/api/client'
 
 function deferred() {
   let resolve
@@ -156,6 +157,63 @@ describe('player chapter auto-advance', () => {
     await expect(advancing).rejects.toBe(routeError)
     expect(player.autoplayContinuity).toBe(false)
     expect(player.error).toBe('无法进入下一章')
+  })
+
+
+  it('unlocks the shared audio element before awaiting progress when autoplaying', async () => {
+    const player = usePlayerStore()
+    const progressGate = deferred()
+    const segmentsGate = deferred()
+    const playCalls = []
+
+    player.bookId = 'book-1'
+    player.chapterId = 'chapter-1'
+    player.chapterList = [{ id: 'chapter-1', title: 'One', index: 0 }]
+
+    playbackApi.getProgress.mockImplementation(() => progressGate.promise)
+    booksApi.chapters.mockResolvedValue([{ id: 'chapter-1', title: 'One' }])
+    booksApi.segments.mockImplementation(() => segmentsGate.promise)
+
+    // Ensure HTMLAudioElement.play is observable under jsdom.
+    const originalPlay = window.HTMLAudioElement.prototype.play
+    window.HTMLAudioElement.prototype.play = vi.fn(function playMock() {
+      playCalls.push(String(this.src || this.currentSrc || ''))
+      return Promise.resolve()
+    })
+    const originalPause = window.HTMLAudioElement.prototype.pause
+    window.HTMLAudioElement.prototype.pause = vi.fn()
+    const originalLoad = window.HTMLAudioElement.prototype.load
+    window.HTMLAudioElement.prototype.load = vi.fn()
+
+    try {
+      const pending = player.resumeFromServer('book-1', 'chapter-1', {
+        bookTitle: 'Book',
+        chapterTitle: 'One',
+        autoplay: true,
+      })
+
+      // Before progress await resolves, unlock must already have happened.
+      expect(player.playbackUnlocked).toBe(true)
+      expect(player.userStartedPlayback).toBe(true)
+      expect(player.autoplayContinuity).toBe(true)
+      expect(playCalls.length).toBeGreaterThan(0)
+
+      progressGate.resolve(null)
+      segmentsGate.resolve([{ id: 'seg-1', index: 0, text: 'hello' }])
+      getCachedAudio.mockResolvedValue(new Blob(['audio'], { type: 'audio/wav' }))
+
+      await pending
+      expect(player.segments).toHaveLength(1)
+      // Real chapter autoplay should call play at least once more after unlock.
+      expect(playCalls.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      window.HTMLAudioElement.prototype.play = originalPlay
+      window.HTMLAudioElement.prototype.pause = originalPause
+      window.HTMLAudioElement.prototype.load = originalLoad
+      playbackApi.getProgress.mockReset()
+      booksApi.chapters.mockReset()
+      booksApi.segments.mockReset()
+    }
   })
 
   it('always sends the fixed 1x synthesis speed', async () => {

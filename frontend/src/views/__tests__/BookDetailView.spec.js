@@ -1,12 +1,13 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { fetchBook, getProgress, listCachedChapterIds, routerPush, resumeFromServer } = vi.hoisted(() => ({
+const { fetchBook, getProgress, listCachedChapterIds, routerPush, resumeFromServer, unlockAutoplay } = vi.hoisted(() => ({
   fetchBook: vi.fn(),
   getProgress: vi.fn(),
   listCachedChapterIds: vi.fn(),
   routerPush: vi.fn(),
   resumeFromServer: vi.fn().mockResolvedValue(),
+  unlockAutoplay: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -29,6 +30,7 @@ vi.mock('@/stores/player', () => ({
     bookTitle: '',
     chapterTitle: '',
     hasTrack: false,
+    unlockAutoplay,
     resumeFromServer,
   }),
 }))
@@ -86,6 +88,7 @@ describe('BookDetailView', () => {
       params: { bookId: 'book-1', chapterId: 'chapter-1' },
       query: { autoplay: '1' },
     })
+    expect(unlockAutoplay).toHaveBeenCalledTimes(1)
     expect(resumeFromServer).toHaveBeenCalledWith(
       'book-1',
       'chapter-1',
@@ -94,6 +97,10 @@ describe('BookDetailView', () => {
         chapterTitle: '未缓存章节',
         autoplay: true,
       }),
+    )
+    // Gesture unlock must happen before any async resume work starts.
+    expect(unlockAutoplay.mock.invocationCallOrder[0]).toBeLessThan(
+      resumeFromServer.mock.invocationCallOrder[0],
     )
 
     resolveResume()
