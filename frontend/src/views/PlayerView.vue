@@ -30,8 +30,22 @@ let chapterLeaveTimer = null
 let speedLeaveTimer = null
 let docClickHandler = null
 
+const scrubbing = ref(false)
+const scrubRatio = ref(null)
+
+const displayProgressPercent = computed(() => {
+  if (scrubbing.value && scrubRatio.value != null) {
+    return Math.max(0, Math.min(100, scrubRatio.value * 100))
+  }
+  return player.progressPercent
+})
+
 const progressStyle = computed(() => ({
-  width: `${player.progressPercent}%`,
+  width: `${displayProgressPercent.value}%`,
+}))
+
+const thumbStyle = computed(() => ({
+  left: `${displayProgressPercent.value}%`,
 }))
 
 const canSeek = computed(() => Number(player.chapterDuration) > 0)
@@ -518,11 +532,72 @@ async function jumpToSegment(index) {
   scrollActiveIntoView(true)
 }
 
-async function onSeek(e) {
+function clientXFromEvent(e) {
+  if (typeof e.clientX === 'number' && !Number.isNaN(e.clientX)) return e.clientX
+  const touch = e.touches?.[0] || e.changedTouches?.[0]
+  if (touch && typeof touch.clientX === 'number') return touch.clientX
+  return 0
+}
+
+function ratioFromPointerEvent(e, el) {
+  const rect = el.getBoundingClientRect()
+  if (!(rect.width > 0)) return 0
+  const x = clientXFromEvent(e)
+  return Math.min(1, Math.max(0, (x - rect.left) / rect.width))
+}
+
+function onSeekPointerDown(e) {
   if (!canSeek.value) return
-  const rect = e.currentTarget.getBoundingClientRect()
-  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-  await player.seek(ratio)
+  // Only primary button / touch / pen.
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  const el = e.currentTarget
+  scrubbing.value = true
+  scrubRatio.value = ratioFromPointerEvent(e, el)
+  try {
+    el.setPointerCapture?.(e.pointerId)
+  } catch {
+    // ignore
+  }
+  e.preventDefault()
+}
+
+function onSeekPointerMove(e) {
+  if (!scrubbing.value || !canSeek.value) return
+  scrubRatio.value = ratioFromPointerEvent(e, e.currentTarget)
+}
+
+async function finishSeekFromEvent(e) {
+  if (!scrubbing.value) return
+  const el = e.currentTarget
+  const ratio = ratioFromPointerEvent(e, el)
+  scrubRatio.value = ratio
+  scrubbing.value = false
+  try {
+    el.releasePointerCapture?.(e.pointerId)
+  } catch {
+    // ignore
+  }
+  try {
+    await player.seek(ratio)
+  } finally {
+    // Keep thumb on the committed position until store progress catches up.
+    scrubRatio.value = null
+  }
+}
+
+function onSeekPointerUp(e) {
+  void finishSeekFromEvent(e)
+}
+
+function onSeekPointerCancel(e) {
+  if (!scrubbing.value) return
+  scrubbing.value = false
+  scrubRatio.value = null
+  try {
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
+  } catch {
+    // ignore
+  }
 }
 
 async function onSeekKeydown(e) {
@@ -604,19 +679,23 @@ function goBack() {
       <div class="seekbar">
         <div
           class="seekbar-track"
-          :class="{ 'is-disabled': !canSeek }"
+          :class="{ 'is-disabled': !canSeek, 'is-scrubbing': scrubbing }"
           role="slider"
           tabindex="0"
           :aria-disabled="canSeek ? 'false' : 'true'"
           :aria-valuemin="0"
           :aria-valuemax="100"
-          :aria-valuenow="Math.round(player.progressPercent)"
+          :aria-valuenow="Math.round(displayProgressPercent)"
           :aria-valuetext="canSeek ? `${formatTime(player.chapterElapsed)} / ${formatTime(player.chapterDuration)}` : '时长未知，暂不可拖动进度'"
           aria-label="播放进度"
-          @click="onSeek"
+          @pointerdown="onSeekPointerDown"
+          @pointermove="onSeekPointerMove"
+          @pointerup="onSeekPointerUp"
+          @pointercancel="onSeekPointerCancel"
           @keydown="onSeekKeydown"
         >
           <div class="seekbar-fill" :style="progressStyle" />
+          <div class="seekbar-thumb" :style="thumbStyle" aria-hidden="true" />
         </div>
         <div class="time-row">
           <span>{{ formatTime(player.chapterElapsed) }}</span>
@@ -779,6 +858,12 @@ function goBack() {
 .seekbar-track.is-disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+.seekbar-track.is-scrubbing {
+  cursor: grabbing;
+}
+.seekbar-track.is-scrubbing .seekbar-thumb {
+  transform: translate(-50%, -50%) scale(1.12);
 }
 .seek-hint {
   margin: 0;

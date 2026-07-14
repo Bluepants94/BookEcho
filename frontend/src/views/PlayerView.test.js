@@ -77,6 +77,7 @@ function resetPlayer(overrides = {}) {
     prev: vi.fn(),
     next: vi.fn(),
     setSpeed: vi.fn(),
+    seek: vi.fn().mockResolvedValue(),
     resumeFromServer: vi.fn().mockResolvedValue(),
     loadSegment: vi.fn().mockResolvedValue(),
     ensureChapterWindowCache: vi.fn(),
@@ -237,6 +238,96 @@ describe('PlayerView', () => {
     player.objectUrl = 'blob:ready'
     await nextTick()
     expect(control.find('.player-loading-spinner').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  function dispatchPointer(el, type, { clientX = 0, pointerId = 1, pointerType = 'mouse', buttons = 1 } = {}) {
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperties(event, {
+      clientX: { value: clientX },
+      pointerId: { value: pointerId },
+      pointerType: { value: pointerType },
+      button: { value: 0 },
+      buttons: { value: buttons },
+    })
+    el.dispatchEvent(event)
+    return event
+  }
+
+  it('supports dragging the seekbar to a new position', async () => {
+    resetPlayer({
+      chapterDuration: 100,
+      chapterElapsed: 10,
+      progressPercent: 10,
+      segments: [{ id: 's1', text: 'hello' }],
+      segmentDurations: [100],
+    })
+    const wrapper = mount(PlayerView)
+    await flushPromises()
+    await nextTick()
+
+    const track = wrapper.get('.seekbar-track')
+    const el = track.element
+    el.getBoundingClientRect = () => ({
+      left: 0,
+      width: 200,
+      top: 0,
+      right: 200,
+      bottom: 28,
+      height: 28,
+      x: 0,
+      y: 0,
+      toJSON() {},
+    })
+    el.setPointerCapture = vi.fn()
+    el.releasePointerCapture = vi.fn()
+
+    dispatchPointer(el, 'pointerdown', { clientX: 40 })
+    await nextTick()
+    expect(track.classes()).toContain('is-scrubbing')
+    expect(wrapper.get('.seekbar-fill').attributes('style') || '').toContain('20%')
+
+    dispatchPointer(el, 'pointermove', { clientX: 100 })
+    await nextTick()
+    expect(wrapper.get('.seekbar-fill').attributes('style') || '').toContain('50%')
+
+    dispatchPointer(el, 'pointerup', { clientX: 150, buttons: 0 })
+    await flushPromises()
+    await nextTick()
+
+    expect(player.seek).toHaveBeenCalledWith(0.75)
+    expect(track.classes()).not.toContain('is-scrubbing')
+    wrapper.unmount()
+  })
+
+  it('does not seek while duration is still unknown', async () => {
+    resetPlayer({
+      chapterDuration: 0,
+      progressPercent: 0,
+      segments: [{ id: 's1', text: 'hello' }],
+    })
+    const wrapper = mount(PlayerView)
+    await flushPromises()
+    await nextTick()
+
+    const track = wrapper.get('.seekbar-track')
+    const el = track.element
+    el.getBoundingClientRect = () => ({
+      left: 0,
+      width: 200,
+      top: 0,
+      right: 200,
+      bottom: 28,
+      height: 28,
+      x: 0,
+      y: 0,
+      toJSON() {},
+    })
+    dispatchPointer(el, 'pointerdown', { clientX: 80 })
+    dispatchPointer(el, 'pointerup', { clientX: 80, buttons: 0 })
+    await flushPromises()
+
+    expect(player.seek).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

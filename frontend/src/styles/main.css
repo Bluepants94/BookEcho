@@ -1254,21 +1254,56 @@ a:focus-visible {
 
 .seekbar-track {
   position: relative;
+  height: 28px;
+  border-radius: 999px;
+  background: transparent;
+  overflow: visible;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex;
+  align-items: center;
+}
+
+/* Visual rail sits in the middle of the larger touch/drag hit area. */
+.seekbar-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
   height: 6px;
+  transform: translateY(-50%);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.16);
-  overflow: hidden;
-  cursor: pointer;
+  pointer-events: none;
 }
 
 .seekbar-fill {
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
   width: 0;
-  border-radius: inherit;
+  border-radius: 999px;
   background: linear-gradient(90deg, #ffb347, #ff6a00);
+  pointer-events: none;
+}
+
+.seekbar-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #ff6a00;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 
 .time-row {
