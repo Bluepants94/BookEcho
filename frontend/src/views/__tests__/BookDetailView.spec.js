@@ -67,12 +67,25 @@ describe('BookDetailView', () => {
     wrapper?.unmount()
   })
 
-  it('clicking an uncached chapter switches the player store then opens the player with autoplay intent', async () => {
+  it('clicking an uncached chapter navigates immediately and starts autoplay open in the background', async () => {
+    let resolveResume
+    resumeFromServer.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveResume = resolve
+        }),
+    )
     await flushPromises()
 
     await wrapper.get('[data-chapter-id="chapter-1"]').trigger('click')
     await flushPromises()
 
+    // Route must not wait for TTS/audio readiness.
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'player',
+      params: { bookId: 'book-1', chapterId: 'chapter-1' },
+      query: { autoplay: '1' },
+    })
     expect(resumeFromServer).toHaveBeenCalledWith(
       'book-1',
       'chapter-1',
@@ -82,10 +95,8 @@ describe('BookDetailView', () => {
         autoplay: true,
       }),
     )
-    expect(routerPush).toHaveBeenCalledWith({
-      name: 'player',
-      params: { bookId: 'book-1', chapterId: 'chapter-1' },
-      query: { autoplay: '1' },
-    })
+
+    resolveResume()
+    await flushPromises()
   })
 })

@@ -476,9 +476,10 @@ export const usePlayerStore = defineStore('player', {
       this.stopProgressSync()
       this.prefetching = new Set()
       // Autoplay continuity: set intent immediately so PlayerView bootstrap
-      // cannot clobber with resumeFromServer(autoplay:false) during async fetch.
+      // cannot clobber with resumeFromServer(autoplay:false) during async fetch,
+      // and mini/full play buttons can show a loading spinner while TTS is pending.
       this.userStartedPlayback = Boolean(autoplay)
-      if (!autoplay) this.autoplayContinuity = false
+      this.autoplayContinuity = Boolean(autoplay)
       this.chapterCacheRunning = false
       this.advanceLock = false
 
@@ -543,6 +544,37 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async resumeFromServer(bookId, chapterId, meta = {}) {
+      const wantAutoplay = meta.autoplay === true
+      // Stamp identity immediately so PlayerView can treat this as the active
+      // chapter and skip a second open() while progress/TTS are still in flight.
+      this.bookId = bookId
+      this.chapterId = chapterId
+      if (meta.bookTitle) this.bookTitle = meta.bookTitle
+      if (meta.chapterTitle) this.chapterTitle = meta.chapterTitle
+      if (Array.isArray(meta.chapterList) && meta.chapterList.length) {
+        this.chapterList = meta.chapterList.map((c, index) => ({
+          id: c.id,
+          title: c.title || `第 ${index + 1} 章`,
+          index,
+        }))
+        this.chapterOrderIndex = this.resolveChapterOrderIndex(chapterId)
+      }
+      // Clear previous text immediately so the new chapter shell does not show
+      // stale paragraphs while segments load.
+      this.segments = []
+      this.segmentDurations = []
+      this.segmentIndex = 0
+      this.currentTime = 0
+      this.duration = 0
+      this.error = ''
+      this.loading = true
+      this.chapterOpening = true
+      this.audioLoading = false
+      this.userStartedPlayback = wantAutoplay
+      this.autoplayContinuity = wantAutoplay
+      // Drop any previous media so mini/full controls show the loading spinner.
+      this.stopHard()
+
       let progress = null
       try {
         // Fetch book-level progress (backend may fall back across chapters).
@@ -569,12 +601,16 @@ export const usePlayerStore = defineStore('player', {
       return this.open({
         bookId,
         chapterId,
-        bookTitle: meta.bookTitle || '',
-        chapterTitle: meta.chapterTitle || (chapterMatches ? progress?.chapter_title : '') || '',
+        bookTitle: meta.bookTitle || this.bookTitle || '',
+        chapterTitle:
+          meta.chapterTitle ||
+          this.chapterTitle ||
+          (chapterMatches ? progress?.chapter_title : '') ||
+          '',
         segmentIndex,
         offset,
-        autoplay: meta.autoplay === true ? true : false,
-        chapterList: meta.chapterList || null,
+        autoplay: wantAutoplay,
+        chapterList: meta.chapterList || this.chapterList || null,
       })
     },
 

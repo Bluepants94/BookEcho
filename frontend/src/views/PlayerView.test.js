@@ -101,7 +101,16 @@ describe('PlayerView', () => {
 
   it('uses and consumes the one-time autoplay query intent', async () => {
     route.query = { autoplay: '1' }
-    resetPlayer({ loading: true })
+    // Fresh route with no continuity yet — bootstrap must start resume with autoplay.
+    resetPlayer({
+      bookId: null,
+      chapterId: null,
+      loading: false,
+      chapterOpening: false,
+      audioLoading: false,
+      userStartedPlayback: false,
+      autoplayContinuity: false,
+    })
 
     const wrapper = mount(PlayerView)
     await flushPromises()
@@ -115,10 +124,33 @@ describe('PlayerView', () => {
     wrapper.unmount()
   })
 
+  it('does not re-open the same chapter when autoplay intent arrives after a gesture open', async () => {
+    route.query = { autoplay: '1' }
+    resetPlayer({
+      loading: true,
+      chapterOpening: true,
+      audioLoading: true,
+      userStartedPlayback: true,
+      autoplayContinuity: true,
+      segments: [],
+    })
+
+    const wrapper = mount(PlayerView)
+    await flushPromises()
+
+    expect(player.resumeFromServer).not.toHaveBeenCalled()
+    expect(router.replace).toHaveBeenCalledWith({ query: {} })
+    wrapper.unmount()
+  })
+
   it('consumes the one-time autoplay intent after resume failure and preserves the error', async () => {
     route.query = { autoplay: '1' }
     const resumeError = new Error('自动播放初始化失败')
-    resetPlayer({ resumeFromServer: vi.fn().mockRejectedValue(resumeError) })
+    resetPlayer({
+      bookId: null,
+      chapterId: null,
+      resumeFromServer: vi.fn().mockRejectedValue(resumeError),
+    })
 
     const wrapper = mount(PlayerView)
     await flushPromises()

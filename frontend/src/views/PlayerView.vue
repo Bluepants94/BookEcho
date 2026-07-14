@@ -36,9 +36,15 @@ const progressStyle = computed(() => ({
 
 const canSeek = computed(() => Number(player.chapterDuration) > 0)
 
-const waitingForAudio = computed(() =>
-  (player.chapterOpening || player.audioLoading) && !player.objectUrl,
-)
+const waitingForAudio = computed(() => {
+  if (player.objectUrl) return false
+  return Boolean(
+    player.chapterOpening ||
+      player.audioLoading ||
+      player.loading ||
+      player.autoplayContinuity,
+  )
+})
 
 const durationLabel = computed(() => {
   if (!canSeek.value) return '时长未知'
@@ -255,6 +261,10 @@ async function selectChapter(chapter, index = 0) {
   if (!chapter?.id) return
   const bookId = route.params.bookId || player.bookId
   if (!bookId) return
+  if (String(player.chapterId) === String(chapter.id) && String(player.bookId) === String(bookId)) {
+    closeAllPopovers()
+    return
+  }
 
   const chapterList = chapterSource.value.length
     ? chapterSource.value
@@ -263,19 +273,26 @@ async function selectChapter(chapter, index = 0) {
   closeAllPopovers()
   localError.value = ''
 
-  try {
-    await player.resumeFromServer(bookId, chapter.id, {
+  // Start open under the user gesture for autoplay, but navigate immediately so
+  // chapter text is not blocked on TTS completion.
+  void player
+    .resumeFromServer(bookId, chapter.id, {
       bookTitle: player.bookTitle,
       chapterTitle: chapter.title || `第 ${index + 1} 章`,
       chapterList,
       autoplay: true,
     })
-    const target = `/player/${bookId}/${chapter.id}`
-    if (route.fullPath !== target) {
-      await router.replace(target)
+    .catch((e) => {
+      localError.value = e?.message || '切换章节失败'
+    })
+
+  const target = `/player/${bookId}/${chapter.id}`
+  if (route.fullPath !== target) {
+    try {
+      await router.replace({ path: target, query: { autoplay: '1' } })
+    } catch (e) {
+      localError.value = e.message || '切换章节失败'
     }
-  } catch (e) {
-    localError.value = e.message || '切换章节失败'
   }
 }
 
@@ -324,10 +341,10 @@ async function bootstrap() {
       if (found && !chapterTitle) chapterTitle = found.title
     }
 
-    // Same track already loaded / opening: normal navigation keeps its audio session.
-    // A one-time autoplay route intentionally continues to resumeFromServer below.
-    // Critical for chapter auto-advance: store may have already open()ed with autoplay
-    // before router.replace; re-bootstrapping with autoplay:false would kill continuous play.
+    // Same track already loaded / opening: keep the existing session.
+    // Especially important for book-detail chapter clicks and auto-advance:
+    // the store is already opening under the user gesture; re-calling open()
+    // here would wait on audio and can also break autoplay gesture chaining.
     // Route params are strings; store IDs may be numbers — always compare via String().
     const sameTrack =
       String(player.bookId) === String(bookId) &&
@@ -335,10 +352,12 @@ async function bootstrap() {
     const continuityActive =
       player.segments.length ||
       player.loading ||
+      player.chapterOpening ||
+      player.audioLoading ||
       player.playing ||
       player.userStartedPlayback ||
       player.autoplayContinuity
-    if (!shouldAutoplay && sameTrack && continuityActive) {
+    if (sameTrack && continuityActive) {
       if (token !== bootToken) return
       ready.value = true
       await nextTick()
@@ -347,12 +366,19 @@ async function bootstrap() {
       return
     }
 
-    await player.resumeFromServer(bookId, chapterId, {
-      bookTitle,
-      chapterTitle,
-      chapterList,
-      autoplay: shouldAutoplay,
-    })
+    // Do not block the page shell on audio synthesis. Resume/open in the
+    // background so chapter text can appear as soon as segments arrive.
+    void player
+      .resumeFromServer(bookId, chapterId, {
+        bookTitle,
+        chapterTitle,
+        chapterList,
+        autoplay: shouldAutoplay,
+      })
+      .catch((e) => {
+        if (token !== bootToken) return
+        localError.value = e?.message || '打开播放页失败'
+      })
     if (token !== bootToken) return
     ready.value = true
     await nextTick()

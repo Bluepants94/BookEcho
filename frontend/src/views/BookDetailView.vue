@@ -240,19 +240,20 @@ async function openChapter(chapter) {
   const found = chapterList.find((c) => String(c.id) === String(chapter.id))
   const chapterTitle = found?.title || chapter.title || `第 ${(chapter.index ?? 0) + 1} 章`
 
-  // Always update the player store first so MiniPlayer / global chapterTitle
-  // follow immediately when switching chapters from the book detail list
-  // (route navigation alone can lag or short-circuit).
-  try {
-    await player.resumeFromServer(bookId, chapter.id, {
+  // Kick off chapter open under the click gesture for autoplay eligibility,
+  // but never wait for TTS/audio before navigating into the player page.
+  // Content and audio are independent: the player page can render text as
+  // soon as segments arrive while the play control shows a spinner.
+  void player
+    .resumeFromServer(bookId, chapter.id, {
       bookTitle: book.value.title || player.bookTitle || '',
       chapterTitle,
       chapterList,
       autoplay: true,
     })
-  } catch {
-    // Still navigate into the player page so the user can retry there.
-  }
+    .catch(() => {
+      // PlayerView bootstrap / on-page retry will surface the error.
+    })
 
   router.push({
     name: 'player',
