@@ -15,6 +15,65 @@ import { normalizeList } from '@/utils/format'
 
 export const SPEEDS = [0.75, 1, 1.25, 1.5, 2]
 
+/**
+ * Build a stable chapter timeline while segment durations fill in asynchronously.
+ * Unknown segments are estimated from the average of known durations so the
+ * seekbar does not swing as prefetch / metadata probes complete.
+ * Pending resumeOffset is treated as the active segment clock until seek sticks.
+ */
+function chapterTimeline(state) {
+  const durations = Array.isArray(state.segmentDurations) ? state.segmentDurations : []
+  const segmentCount = Math.max(
+    durations.length,
+    Array.isArray(state.segments) ? state.segments.length : 0,
+  )
+  let knownSum = 0
+  let knownCount = 0
+  for (const raw of durations) {
+    const d = Number(raw)
+    if (d > 0 && Number.isFinite(d)) {
+      knownSum += d
+      knownCount += 1
+    }
+  }
+
+  const avg = knownCount > 0 ? knownSum / knownCount : 0
+  let total = 0
+  if (segmentCount > 0 && knownCount > 0) {
+    // Extrapolate missing tails/prefixes so total does not jump only-up from partial probes.
+    total = knownSum + avg * Math.max(0, segmentCount - knownCount)
+  } else {
+    total = knownSum
+  }
+
+  const idx = Math.max(0, Number(state.segmentIndex) || 0)
+  const resume = Number(state.resumeOffset) || 0
+  const live = Number(state.currentTime) || 0
+  // While a resume seek is still pending, prefer the target offset so the bar
+  // does not flash 0% then leap to the saved position.
+  const segmentTime = resume > 0 ? Math.max(live, resume) : live
+
+  let elapsed = 0
+  let knownBefore = 0
+  for (let i = 0; i < idx; i += 1) {
+    const d = Number(durations[i])
+    if (d > 0 && Number.isFinite(d)) {
+      elapsed += d
+      knownBefore += 1
+    }
+  }
+  const missingBefore = Math.max(0, idx - knownBefore)
+  if (missingBefore > 0 && avg > 0) {
+    elapsed += avg * missingBefore
+  }
+  elapsed += Math.max(0, segmentTime)
+  if (total > 0) {
+    elapsed = Math.min(elapsed, total)
+  }
+  return { total, elapsed }
+}
+
+
 /** Minimal WAV used to unlock HTMLAudioElement under a real user gesture. */
 const SILENT_WAV =
   'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
@@ -136,45 +195,11 @@ export const usePlayerStore = defineStore('player', {
           : s.chapterList.findIndex((c) => String(c.id) === String(s.chapterId))
       return idx >= 0 && idx + 1 < s.chapterList.length
     },
-    chapterDuration: (s) => {
-      if (!Array.isArray(s.segmentDurations) || !s.segmentDurations.length) return 0
-      let total = 0
-      for (const raw of s.segmentDurations) {
-        const d = Number(raw)
-        if (d > 0 && Number.isFinite(d)) total += d
-      }
-      return total
-    },
-    chapterElapsed: (s) => {
-      let elapsed = 0
-      const idx = Number(s.segmentIndex) || 0
-      if (Array.isArray(s.segmentDurations)) {
-        for (let i = 0; i < idx; i += 1) {
-          const d = Number(s.segmentDurations[i])
-          if (d > 0 && Number.isFinite(d)) elapsed += d
-        }
-      }
-      elapsed += Number(s.currentTime) || 0
-      return elapsed
-    },
+    chapterDuration: (s) => chapterTimeline(s).total,
+    chapterElapsed: (s) => chapterTimeline(s).elapsed,
     progressPercent: (s) => {
-      let total = 0
-      if (Array.isArray(s.segmentDurations)) {
-        for (const raw of s.segmentDurations) {
-          const d = Number(raw)
-          if (d > 0 && Number.isFinite(d)) total += d
-        }
-      }
+      const { total, elapsed } = chapterTimeline(s)
       if (!(total > 0)) return 0
-      let elapsed = 0
-      const idx = Number(s.segmentIndex) || 0
-      if (Array.isArray(s.segmentDurations)) {
-        for (let i = 0; i < idx; i += 1) {
-          const d = Number(s.segmentDurations[i])
-          if (d > 0 && Number.isFinite(d)) elapsed += d
-        }
-      }
-      elapsed += Number(s.currentTime) || 0
       return Math.max(0, Math.min(100, (elapsed / total) * 100))
     },
     speeds: () => SPEEDS,
@@ -384,23 +409,51 @@ export const usePlayerStore = defineStore('player', {
       const applyResumeOffset = () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
         if (!(this.resumeOffset > 0)) return
+        const target = this.resumeOffset
+        // Keep UI clock on the resume target until the media seek sticks.
+        this.currentTime = Math.max(Number(this.currentTime) || 0, target)
         const segDur = Number(audio.duration)
-        if (segDur > 0 && Number.isFinite(segDur) && this.resumeOffset >= segDur) {
+        if (segDur > 0 && Number.isFinite(segDur) && target >= segDur - 0.05) {
+          // Offset is past this segment (stale save) — land at end, drop pending.
+          try {
+            audio.currentTime = Math.max(0, segDur - 0.05)
+            this.currentTime = audio.currentTime || Math.max(0, segDur - 0.05)
+          } catch {
+            // ignore
+          }
           this.resumeOffset = 0
           return
         }
         try {
-          audio.currentTime = this.resumeOffset
-          this.currentTime = audio.currentTime || this.resumeOffset
-          this.resumeOffset = 0
+          audio.currentTime = target
+          const applied = Number(audio.currentTime)
+          // Some browsers report 0 until the seek fully commits; keep pending then.
+          if (Number.isFinite(applied) && Math.abs(applied - target) <= 0.35) {
+            this.currentTime = applied
+            this.resumeOffset = 0
+          } else {
+            this.currentTime = target
+          }
         } catch {
           // Safari may reject seek until canplay.
+          this.currentTime = target
         }
       }
 
       audio.addEventListener('timeupdate', () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
-        this.currentTime = audio.currentTime || 0
+        const live = Number(audio.currentTime) || 0
+        // Ignore early 0 ticks while a resume seek is still pending.
+        if (this.resumeOffset > 0) {
+          if (live > 0 && Math.abs(live - this.resumeOffset) <= 0.35) {
+            this.currentTime = live
+            this.resumeOffset = 0
+          } else {
+            this.currentTime = Math.max(live, this.resumeOffset)
+          }
+        } else {
+          this.currentTime = live
+        }
         syncDurationFromAudio()
         // Keep rate sticky on iOS while playing.
         const rate = Number(this.speed) || 1
@@ -628,6 +681,8 @@ export const usePlayerStore = defineStore('player', {
       this.segmentDurations = []
       this.segmentIndex = Number(segmentIndex) || 0
       this.resumeOffset = Number(offset) || 0
+      // Seed the UI clock immediately so progress does not start at 0% then jump.
+      this.currentTime = this.resumeOffset > 0 ? this.resumeOffset : 0
       this.error = ''
       this.loading = true
       this.chapterOpening = true
@@ -1009,6 +1064,11 @@ export const usePlayerStore = defineStore('player', {
       this.stopHard()
       const mediaGen = this.mediaGeneration
       this.segmentIndex = index
+      // stopHard() zeros currentTime; re-seed from pending resume so the seekbar
+      // stays on the restored position while metadata/canplay catches up.
+      if (this.resumeOffset > 0) {
+        this.currentTime = this.resumeOffset
+      }
       this.loading = true
       this.audioLoading = true
       this.error = ''

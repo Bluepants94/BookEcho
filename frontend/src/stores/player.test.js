@@ -238,3 +238,90 @@ describe('player chapter auto-advance', () => {
     }))
   })
 })
+
+describe('player progress stability on resume', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('keeps progress percent stable while segment durations fill in after resume', () => {
+    const player = usePlayerStore()
+    player.segments = [
+      { id: 's0', text: 'a' },
+      { id: 's1', text: 'b' },
+      { id: 's2', text: 'c' },
+      { id: 's3', text: 'd' },
+    ]
+    player.resetSegmentDurations(4)
+    player.segmentIndex = 1
+    player.resumeOffset = 10
+    player.currentTime = 10
+
+    // First known duration arrives for the active segment only.
+    player.setSegmentDuration(1, 20)
+    const first = player.progressPercent
+    expect(first).toBeGreaterThan(0)
+
+    // Earlier/later segments probe later — percent should stay in a tight band
+    // (extrapolated total grows with average, so elapsed/total stays coherent).
+    player.setSegmentDuration(0, 20)
+    const second = player.progressPercent
+    player.setSegmentDuration(2, 20)
+    const third = player.progressPercent
+    player.setSegmentDuration(3, 20)
+    const fourth = player.progressPercent
+
+    for (const value of [first, second, third, fourth]) {
+      expect(value).toBeGreaterThan(20)
+      expect(value).toBeLessThan(45)
+    }
+    // No wild swing between successive fills.
+    expect(Math.abs(second - first)).toBeLessThan(15)
+    expect(Math.abs(third - second)).toBeLessThan(15)
+    expect(Math.abs(fourth - third)).toBeLessThan(15)
+  })
+
+  it('does not report 0% while a resume offset is pending and live clock is still 0', () => {
+    const player = usePlayerStore()
+    player.segments = [{ id: 's0', text: 'a' }, { id: 's1', text: 'b' }]
+    player.resetSegmentDurations(2)
+    player.segmentIndex = 0
+    player.resumeOffset = 12
+    player.currentTime = 0
+    player.setSegmentDuration(0, 30)
+    player.setSegmentDuration(1, 30)
+
+    expect(player.chapterElapsed).toBeGreaterThanOrEqual(12)
+    expect(player.progressPercent).toBeGreaterThan(15)
+    expect(player.progressPercent).toBeLessThan(50)
+  })
+
+  it('open seeds currentTime from offset immediately', async () => {
+    const player = usePlayerStore()
+    booksApi.chapters.mockResolvedValue([{ id: 'chapter-1', title: 'One' }])
+    booksApi.segments.mockResolvedValue([
+      { id: 'seg-1', index: 0, text: 'hello' },
+      { id: 'seg-2', index: 1, text: 'world' },
+    ])
+
+    // Do not autoplay — just prepare chapter position.
+    const pending = player.open({
+      bookId: 'book-1',
+      chapterId: 'chapter-1',
+      bookTitle: 'Book',
+      chapterTitle: 'One',
+      segmentIndex: 1,
+      offset: 7.5,
+      autoplay: false,
+    })
+
+    // Before segments resolve, resume offset and UI clock are already seeded.
+    expect(player.resumeOffset).toBe(7.5)
+    expect(player.currentTime).toBe(7.5)
+    await pending
+    expect(player.segmentIndex).toBe(1)
+    expect(player.currentTime).toBe(7.5)
+    expect(player.resumeOffset).toBe(7.5)
+  })
+})
+
