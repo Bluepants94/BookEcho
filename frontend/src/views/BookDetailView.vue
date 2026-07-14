@@ -19,7 +19,10 @@ const player = usePlayerStore()
 const booting = ref(true)
 const deleting = ref(false)
 const actionError = ref('')
+/** Latest progress for "继续阅读" highlight (most recently updated chapter). */
 const bookProgress = ref(null)
+/** Per-chapter progress map: chapterId -> { segment_index, position_seconds, ... } */
+const chapterProgressMap = ref({})
 const cachedChapterIds = ref(new Set())
 const chapterPageIndex = ref(0)
 const pageSelectOpen = ref(false)
@@ -101,12 +104,33 @@ async function pollChaptersUntilReady(maxAttempts = 20, intervalMs = 500) {
 async function refreshBookProgress() {
   if (!book.value?.id) {
     bookProgress.value = null
+    chapterProgressMap.value = {}
     return
   }
   try {
-    bookProgress.value = await playbackApi.getProgress(book.value.id)
+    const rows = await playbackApi.listProgress(book.value.id)
+    const map = {}
+    for (const row of rows || []) {
+      if (row?.chapter_id == null) continue
+      map[String(row.chapter_id)] = row
+    }
+    chapterProgressMap.value = map
+    // Latest for "最近阅读" badge: first row is newest (API sorts by updated_at desc).
+    bookProgress.value = (rows && rows[0]) || null
   } catch {
-    bookProgress.value = null
+    // Fallback to single latest progress if list endpoint unavailable.
+    try {
+      const latest = await playbackApi.getProgress(book.value.id)
+      bookProgress.value = latest
+      if (latest?.chapter_id != null) {
+        chapterProgressMap.value = { [String(latest.chapter_id)]: latest }
+      } else {
+        chapterProgressMap.value = {}
+      }
+    } catch {
+      bookProgress.value = null
+      chapterProgressMap.value = {}
+    }
   }
 }
 
@@ -119,10 +143,8 @@ function isLatestChapter(chapter) {
 }
 
 function chapterProgressPercent(chapter) {
-  const progress = bookProgress.value
-  // Only the chapter that has stored progress shows a bar; others stay empty.
-  if (!progress || progress.chapter_id == null) return 0
-  if (String(progress.chapter_id) !== String(chapter.id)) return 0
+  const progress = chapterProgressMap.value?.[String(chapter.id)]
+  if (!progress) return 0
 
   const segIndex = Math.max(0, Number(progress.segment_index) || 0)
   const position = Math.max(0, Number(progress.position_seconds) || 0)
@@ -260,6 +282,8 @@ async function openChapter(chapter) {
   // but never wait for TTS/audio before navigating into the player page.
   // Content and audio are independent: the player page can render text as
   // soon as segments arrive while the play control shows a spinner.
+  // Persist previous chapter position before switching so its progress bar remains.
+  void player.saveProgress?.(true)
   // Synchronously unlock the shared Audio element while the click activation
   // is still valid (resumeFromServer also unlocks before its first await).
   player.unlockAutoplay?.()

@@ -160,7 +160,7 @@ class ProgressOut(BaseModel):
 
 
 class ProgressUpdate(BaseModel):
-    chapter_id: int | None = None
+    chapter_id: int
     segment_index: int = 0
     position_seconds: float | None = None
     offset_seconds: float | None = None
@@ -175,7 +175,7 @@ class ProgressUpdate(BaseModel):
 
 class PlaybackProgressUpdate(BaseModel):
     book_id: int
-    chapter_id: int | None = None
+    chapter_id: int
     segment_index: int = 0
     position_seconds: float | None = None
     offset_seconds: float | None = None

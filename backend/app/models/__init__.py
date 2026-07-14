@@ -113,20 +113,29 @@ class Segment(Base):
 
 
 class PlaybackProgress(Base):
+    """Per-user, per-book, per-chapter playback position.
+
+    Each chapter keeps its own progress row so switching chapters never
+    overwrites another chapter's position. Rows are deleted with the book
+    (and cascade when a chapter is removed).
+    """
+
     __tablename__ = "playback_progress"
-    __table_args__ = (UniqueConstraint("user_id", "book_id", name="uq_progress_user_book"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "book_id", "chapter_id", name="uq_progress_user_book_chapter"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), nullable=False, index=True)
-    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
+    chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False, index=True)
     segment_index: Mapped[int] = mapped_column(Integer, default=0)
     position_seconds: Mapped[float] = mapped_column(Float, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     user: Mapped[User] = relationship(back_populates="progress_records")
     book: Mapped[Book] = relationship()
-    chapter: Mapped[Chapter | None] = relationship()
+    chapter: Mapped[Chapter] = relationship()
 
 
 class Job(Base):

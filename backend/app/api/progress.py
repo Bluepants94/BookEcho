@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -8,7 +8,12 @@ from app.models import PlaybackProgress, User
 from app.schemas import ProgressOut, ProgressUpdate
 from app.services.auth import get_current_user
 from app.services.books import require_book_read
-from app.services.progress import validate_progress_payload
+from app.services.progress import (
+    get_latest_book_progress,
+    list_book_progress,
+    upsert_chapter_progress,
+    validate_progress_payload,
+)
 
 router = APIRouter(prefix="/progress", tags=["progress"])
 
@@ -31,13 +36,21 @@ def get_progress(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> ProgressOut:
+    """Latest progress for a book (compat). Prefer /playback/progress?chapter_id=..."""
     require_book_read(db, book_id, user)
-    row = (
-        db.query(PlaybackProgress)
-        .filter(PlaybackProgress.user_id == user.id, PlaybackProgress.book_id == book_id)
-        .first()
-    )
+    row = get_latest_book_progress(db, user_id=user.id, book_id=book_id)
     return _progress_out(row, book_id)
+
+
+@router.get("/{book_id}/all", response_model=list[ProgressOut])
+def list_progress(
+    book_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[ProgressOut]:
+    require_book_read(db, book_id, user)
+    rows = list_book_progress(db, user_id=user.id, book_id=book_id)
+    return [_progress_out(row, book_id) for row in rows]
 
 
 @router.put("/{book_id}", response_model=ProgressOut)
@@ -54,17 +67,12 @@ def put_progress(
         chapter_id=payload.chapter_id,
         segment_index=payload.segment_index,
     )
-    row = (
-        db.query(PlaybackProgress)
-        .filter(PlaybackProgress.user_id == user.id, PlaybackProgress.book_id == book_id)
-        .first()
+    row = upsert_chapter_progress(
+        db,
+        user_id=user.id,
+        book_id=book_id,
+        chapter_id=payload.chapter_id,
+        segment_index=payload.segment_index,
+        position_seconds=payload.resolved_position(),
     )
-    if not row:
-        row = PlaybackProgress(user_id=user.id, book_id=book_id)
-        db.add(row)
-    row.chapter_id = payload.chapter_id
-    row.segment_index = payload.segment_index
-    row.position_seconds = payload.resolved_position()
-    db.commit()
-    db.refresh(row)
     return _progress_out(row, book_id)

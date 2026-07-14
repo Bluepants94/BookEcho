@@ -289,6 +289,8 @@ async function selectChapter(chapter, index = 0) {
 
   // Start open under the user gesture for autoplay, but navigate immediately so
   // chapter text is not blocked on TTS completion.
+  // Keep previous chapter progress before switching.
+  void player.saveProgress?.(true)
   player.unlockAutoplay?.()
   void player
     .resumeFromServer(bookId, chapter.id, {

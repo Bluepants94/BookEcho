@@ -162,20 +162,36 @@ export const booksApi = {
   remove: (id) => api(`/books/${id}`, { method: 'DELETE' }),
 }
 
+function normalizeProgressRow(data, bookId = null) {
+  if (!data || typeof data !== 'object') return data
+  const position =
+    data.position_seconds ?? data.offset_seconds ?? data.position ?? data.offset ?? 0
+  return {
+    ...data,
+    book_id: data.book_id ?? bookId,
+    chapter_id: data.chapter_id ?? null,
+    segment_index: Number(data.segment_index) || 0,
+    position_seconds: Number(position) || 0,
+    offset_seconds: Number(position) || 0,
+  }
+}
+
 export const playbackApi = {
+  /** Latest book progress, or one chapter's progress when chapterId is provided. */
   getProgress: async (bookId, chapterId = null) => {
     const q = new URLSearchParams()
     q.set('book_id', bookId)
     if (chapterId != null && chapterId !== '') q.set('chapter_id', chapterId)
     const data = await api(`/playback/progress?${q.toString()}`)
-    if (!data || typeof data !== 'object') return data
-    const position =
-      data.position_seconds ?? data.offset_seconds ?? data.position ?? data.offset ?? 0
-    return {
-      ...data,
-      position_seconds: Number(position) || 0,
-      offset_seconds: Number(position) || 0,
-    }
+    return normalizeProgressRow(data, bookId)
+  },
+  /** All per-chapter progress rows for a book (detail progress bars). */
+  listProgress: async (bookId) => {
+    const q = new URLSearchParams()
+    q.set('book_id', bookId)
+    const data = await api(`/playback/progress/all?${q.toString()}`)
+    const rows = Array.isArray(data) ? data : data?.items || data?.data || []
+    return rows.map((row) => normalizeProgressRow(row, bookId)).filter(Boolean)
   },
   putProgress: (data) => {
     const position =

@@ -1,13 +1,15 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { fetchBook, getProgress, listCachedChapterIds, routerPush, resumeFromServer, unlockAutoplay } = vi.hoisted(() => ({
+const { fetchBook, getProgress, listProgress, listCachedChapterIds, routerPush, resumeFromServer, unlockAutoplay, saveProgress } = vi.hoisted(() => ({
   fetchBook: vi.fn(),
   getProgress: vi.fn(),
+  listProgress: vi.fn(),
   listCachedChapterIds: vi.fn(),
   routerPush: vi.fn(),
   resumeFromServer: vi.fn().mockResolvedValue(),
   unlockAutoplay: vi.fn(),
+  saveProgress: vi.fn().mockResolvedValue(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -31,13 +33,14 @@ vi.mock('@/stores/player', () => ({
     chapterTitle: '',
     hasTrack: false,
     unlockAutoplay,
+    saveProgress,
     resumeFromServer,
   }),
 }))
 
 vi.mock('@/api/client', () => ({
   booksApi: { remove: vi.fn() },
-  playbackApi: { getProgress },
+  playbackApi: { getProgress, listProgress },
 }))
 
 vi.mock('@/utils/audioCache', () => ({ listCachedChapterIds }))
@@ -52,6 +55,7 @@ describe('BookDetailView', () => {
     vi.clearAllMocks()
     fetchBook.mockResolvedValue()
     getProgress.mockResolvedValue(null)
+    listProgress.mockResolvedValue([])
     listCachedChapterIds.mockReturnValue([])
     resumeFromServer.mockResolvedValue()
     wrapper = mount(BookDetailView, {
@@ -88,6 +92,7 @@ describe('BookDetailView', () => {
       params: { bookId: 'book-1', chapterId: 'chapter-1' },
       query: { autoplay: '1' },
     })
+    expect(saveProgress).toHaveBeenCalled()
     expect(unlockAutoplay).toHaveBeenCalledTimes(1)
     expect(resumeFromServer).toHaveBeenCalledWith(
       'book-1',

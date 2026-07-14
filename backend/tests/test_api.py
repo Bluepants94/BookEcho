@@ -193,7 +193,7 @@ def test_change_password(client: TestClient):
 def test_progress_endpoints(client: TestClient):
     assert _register(client, "dave").status_code == 201
     token = _login(client, "dave")
-    content = "第一章\n内容一二三。\n".encode("utf-8")
+    content = "第一章\n内容一二三。\n\n第二章\n内容四五六。\n".encode("utf-8")
     up = client.post(
         "/api/books",
         headers=_auth(token),
@@ -202,16 +202,56 @@ def test_progress_endpoints(client: TestClient):
     )
     book_id = up.json()["id"]
     detail = client.get(f"/api/books/{book_id}", headers=_auth(token)).json()
-    chapter_id = detail["chapters"][0]["id"]
-    put = client.put(
+    assert len(detail["chapters"]) >= 2
+    chapter_a = detail["chapters"][0]["id"]
+    chapter_b = detail["chapters"][1]["id"]
+
+    put_a = client.put(
         f"/api/progress/{book_id}",
         headers=_auth(token),
-        json={"chapter_id": chapter_id, "segment_index": 0, "position_seconds": 12.5},
+        json={"chapter_id": chapter_a, "segment_index": 0, "position_seconds": 12.5},
     )
-    assert put.status_code == 200
-    got = client.get(f"/api/progress/{book_id}", headers=_auth(token))
-    assert got.status_code == 200
-    assert got.json()["position_seconds"] == 12.5
+    assert put_a.status_code == 200, put_a.text
+    put_b = client.put(
+        "/api/playback/progress",
+        headers=_auth(token),
+        json={
+            "book_id": book_id,
+            "chapter_id": chapter_b,
+            "segment_index": 1,
+            "position_seconds": 3.0,
+        },
+    )
+    assert put_b.status_code == 200, put_b.text
+
+    got_a = client.get(
+        f"/api/playback/progress?book_id={book_id}&chapter_id={chapter_a}",
+        headers=_auth(token),
+    )
+    assert got_a.status_code == 200
+    assert got_a.json()["chapter_id"] == chapter_a
+    assert got_a.json()["position_seconds"] == 12.5
+
+    got_b = client.get(
+        f"/api/playback/progress?book_id={book_id}&chapter_id={chapter_b}",
+        headers=_auth(token),
+    )
+    assert got_b.status_code == 200
+    assert got_b.json()["chapter_id"] == chapter_b
+    assert got_b.json()["segment_index"] == 1
+    assert got_b.json()["position_seconds"] == 3.0
+
+    listed = client.get(f"/api/playback/progress/all?book_id={book_id}", headers=_auth(token))
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 2
+    by_chapter = {row["chapter_id"]: row for row in rows}
+    assert by_chapter[chapter_a]["position_seconds"] == 12.5
+    assert by_chapter[chapter_b]["position_seconds"] == 3.0
+
+    latest = client.get(f"/api/progress/{book_id}", headers=_auth(token))
+    assert latest.status_code == 200
+    assert latest.json()["chapter_id"] == chapter_b
 
 
 def test_parser_unit():
@@ -484,12 +524,21 @@ def test_progress_rejects_foreign_chapter(client: TestClient):
     )
     assert missing.status_code == 404
 
+    own_detail = client.get(f"/api/books/{owner_book}", headers=_auth(owner)).json()
+    own_chapter = own_detail["chapters"][0]["id"]
     neg = client.put(
         f"/api/progress/{owner_book}",
         headers=_auth(owner),
-        json={"chapter_id": None, "segment_index": -1, "position_seconds": 1.0},
+        json={"chapter_id": own_chapter, "segment_index": -1, "position_seconds": 1.0},
     )
     assert neg.status_code == 400
+
+    missing_chapter = client.put(
+        f"/api/progress/{owner_book}",
+        headers=_auth(owner),
+        json={"segment_index": 0, "position_seconds": 1.0},
+    )
+    assert missing_chapter.status_code in (400, 422)
 
     # playback path should enforce the same checks
     play_bad = client.put(

@@ -568,6 +568,18 @@ export const usePlayerStore = defineStore('player', {
       if (autoplay && !this.playbackUnlocked) {
         this.unlockAutoplay()
       }
+      // Persist previous chapter progress before we wipe identity/session.
+      const leavingDifferentChapter =
+        this.bookId != null &&
+        this.chapterId != null &&
+        (String(this.bookId) !== String(bookId) || String(this.chapterId) !== String(chapterId))
+      if (leavingDifferentChapter) {
+        try {
+          await this.saveProgress(true)
+        } catch {
+          // ignore save errors; opening the new chapter is more important
+        }
+      }
       // New session: invalidate any in-flight open/loadSegment from previous book/chapter.
       const sessionId = ++this.sessionId
       this.loadToken += 1
@@ -674,6 +686,16 @@ export const usePlayerStore = defineStore('player', {
       // Any await below will expire browser user-activation for audio.play().
       if (wantAutoplay) {
         this.unlockAutoplay()
+      }
+      // Save the previous chapter row first so multi-chapter bars stay accurate.
+      // Keep this after unlock so gesture unlock still happens synchronously.
+      const leavingDifferentChapter =
+        this.bookId != null &&
+        this.chapterId != null &&
+        (String(this.bookId) !== String(bookId) || String(this.chapterId) !== String(chapterId))
+      if (leavingDifferentChapter) {
+        // Fire-and-forget with the old book/chapter identity still intact.
+        void this.saveProgress(true)
       }
       // Stamp identity immediately so PlayerView can treat this as the active
       // chapter and skip a second open() while progress/TTS are still in flight.
@@ -1196,6 +1218,13 @@ export const usePlayerStore = defineStore('player', {
         this.userStartedPlayback = true
       }
 
+      // Persist current chapter before auto-advancing.
+      try {
+        await this.saveProgress(true)
+      } catch {
+        // ignore
+      }
+
       let opening
       try {
         opening = this.open({
@@ -1423,15 +1452,20 @@ export const usePlayerStore = defineStore('player', {
     },
 
     async saveProgress(force = false) {
-      if (!this.bookId || !this.chapterId) return
+      const bookId = this.bookId
+      const chapterId = this.chapterId
+      if (!bookId || chapterId == null || chapterId === '') return
       if (!force && !this.playing) return
+      // Snapshot now so a concurrent chapter switch cannot save the wrong chapter
+      // with this call's position (or vice versa).
+      const payload = {
+        book_id: bookId,
+        chapter_id: chapterId,
+        segment_index: this.segmentIndex,
+        position_seconds: this.currentTime || 0,
+      }
       try {
-        await playbackApi.putProgress({
-          book_id: this.bookId,
-          chapter_id: this.chapterId,
-          segment_index: this.segmentIndex,
-          position_seconds: this.currentTime || 0,
-        })
+        await playbackApi.putProgress(payload)
       } catch (e) {
         const status = e?.status
         if (status === 401 || status === 403) {

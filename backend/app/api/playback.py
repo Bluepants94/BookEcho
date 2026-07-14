@@ -8,7 +8,13 @@ from app.models import PlaybackProgress, User
 from app.schemas import PlaybackProgressUpdate, ProgressOut
 from app.services.auth import get_current_user
 from app.services.books import require_book_read
-from app.services.progress import validate_progress_payload
+from app.services.progress import (
+    get_chapter_progress,
+    get_latest_book_progress,
+    list_book_progress,
+    upsert_chapter_progress,
+    validate_progress_payload,
+)
 
 router = APIRouter(prefix="/playback", tags=["playback"])
 
@@ -32,23 +38,25 @@ def get_playback_progress(
     book_id: int = Query(...),
     chapter_id: int | None = Query(default=None),
 ) -> ProgressOut:
+    """Return chapter progress when chapter_id is given; otherwise latest book progress."""
     require_book_read(db, book_id, user)
-    query = db.query(PlaybackProgress).filter(
-        PlaybackProgress.user_id == user.id,
-        PlaybackProgress.book_id == book_id,
-    )
     if chapter_id is not None:
-        query = query.filter(PlaybackProgress.chapter_id == chapter_id)
-    row = query.first()
-    # If filtered by chapter and no row, still return empty progress for that book.
-    if not row and chapter_id is not None:
-        # fall back to book-level progress if chapter filter misses
-        row = (
-            db.query(PlaybackProgress)
-            .filter(PlaybackProgress.user_id == user.id, PlaybackProgress.book_id == book_id)
-            .first()
-        )
+        row = get_chapter_progress(db, user_id=user.id, book_id=book_id, chapter_id=chapter_id)
+        return _progress_out(row, book_id)
+    row = get_latest_book_progress(db, user_id=user.id, book_id=book_id)
     return _progress_out(row, book_id)
+
+
+@router.get("/progress/all", response_model=list[ProgressOut])
+def list_playback_progress(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+    book_id: int = Query(...),
+) -> list[ProgressOut]:
+    """List per-chapter progress for a book (used by book detail progress bars)."""
+    require_book_read(db, book_id, user)
+    rows = list_book_progress(db, user_id=user.id, book_id=book_id)
+    return [_progress_out(row, book_id) for row in rows]
 
 
 @router.put("/progress", response_model=ProgressOut)
@@ -64,17 +72,12 @@ def put_playback_progress(
         chapter_id=payload.chapter_id,
         segment_index=payload.segment_index,
     )
-    row = (
-        db.query(PlaybackProgress)
-        .filter(PlaybackProgress.user_id == user.id, PlaybackProgress.book_id == payload.book_id)
-        .first()
+    row = upsert_chapter_progress(
+        db,
+        user_id=user.id,
+        book_id=payload.book_id,
+        chapter_id=payload.chapter_id,
+        segment_index=payload.segment_index,
+        position_seconds=payload.resolved_position(),
     )
-    if not row:
-        row = PlaybackProgress(user_id=user.id, book_id=payload.book_id)
-        db.add(row)
-    row.chapter_id = payload.chapter_id
-    row.segment_index = payload.segment_index
-    row.position_seconds = payload.resolved_position()
-    db.commit()
-    db.refresh(row)
     return _progress_out(row, payload.book_id)
