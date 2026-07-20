@@ -172,6 +172,16 @@ export const usePlayerStore = defineStore('player', {
     chapterCacheRunning: false,
     /** Prevents concurrent ended/next handlers from double-advancing. */
     advanceLock: false,
+    /** True only when the user (or explicit pause()) requested a pause. */
+    intentionalPause: false,
+    /** True when a background/lock-screen resume should be retried. */
+    backgroundResumePending: false,
+    /** Screen Wake Lock sentinel while actively playing (best-effort). */
+    wakeLock: null,
+    /** One-shot guards for media session / visibility listeners. */
+    mediaSessionBound: false,
+    visibilityBound: false,
+    backgroundResumeTimer: null,
   }),
   getters: {
     hasTrack: (s) => Boolean(s.bookId && s.chapterId),
@@ -460,6 +470,8 @@ export const usePlayerStore = defineStore('player', {
         if (Math.abs((audio.playbackRate || 1) - rate) > 0.01) {
           this.applyPlaybackRate(audio)
         }
+        // Keep lock-screen scrubber roughly in sync without flooding Media Session.
+        if (Math.floor(live) % 2 === 0) this.updateMediaSession()
       })
       audio.addEventListener('loadedmetadata', () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
@@ -487,15 +499,37 @@ export const usePlayerStore = defineStore('player', {
         if (audio._mediaGeneration !== this.mediaGeneration) return
         this.applyPlaybackRate(audio)
         this.playing = true
+        this.intentionalPause = false
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
       })
       audio.addEventListener('playing', () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
         this.applyPlaybackRate(audio)
         this.playing = true
+        this.intentionalPause = false
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
       })
       audio.addEventListener('pause', () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
         this.playing = false
+        this.releaseWakeLock()
+        this.updateMediaSession()
+        // OS / browser may pause media when backgrounded or screen locks.
+        // If the user did not pause, queue a best-effort resume.
+        if (
+          this.userStartedPlayback &&
+          !this.intentionalPause &&
+          !this.loading &&
+          !this.advanceLock &&
+          this.objectUrl &&
+          audio.currentSrc
+        ) {
+          this.scheduleBackgroundResume('unexpected-pause')
+        }
       })
       audio.addEventListener('error', () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
@@ -505,7 +539,183 @@ export const usePlayerStore = defineStore('player', {
         this.playing = false
       })
       this.audio = audio
+      this.bindBackgroundGuards()
+      this.bindMediaSession()
       return audio
+    },
+
+    bindBackgroundGuards() {
+      if (this.visibilityBound || typeof document === 'undefined') return
+      this.visibilityBound = true
+      const onVisibility = () => {
+        if (document.visibilityState === 'visible') {
+          void this.tryResumePlayback('visibility-visible')
+          if (this.playing) this.requestWakeLock()
+          this.updateMediaSession()
+        }
+      }
+      const onPageShow = () => {
+        void this.tryResumePlayback('pageshow')
+      }
+      document.addEventListener('visibilitychange', onVisibility)
+      window.addEventListener('pageshow', onPageShow)
+      window.addEventListener('focus', onPageShow)
+    },
+
+    bindMediaSession() {
+      if (this.mediaSessionBound) return
+      const ms = typeof navigator !== 'undefined' ? navigator.mediaSession : null
+      if (!ms || typeof ms.setActionHandler !== 'function') return
+      this.mediaSessionBound = true
+      const safe = (fn) => () => {
+        try {
+          void fn()
+        } catch {
+          // ignore
+        }
+      }
+      try {
+        ms.setActionHandler('play', safe(() => {
+          this.intentionalPause = false
+          void this.tryResumePlayback('media-session-play')
+        }))
+        ms.setActionHandler('pause', safe(() => {
+          this.intentionalPause = true
+          this.backgroundResumePending = false
+          this.pause()
+        }))
+        ms.setActionHandler('previoustrack', safe(() => {
+          void this.prev()
+        }))
+        ms.setActionHandler('nexttrack', safe(() => {
+          void this.next()
+        }))
+        ms.setActionHandler('seekto', safe((details) => {
+          const total = Number(this.chapterDuration) || 0
+          if (!(total > 0) || details == null || details.seekTime == null) return
+          const ratio = Math.max(0, Math.min(1, Number(details.seekTime) / total))
+          void this.seek(ratio)
+        }))
+      } catch {
+        // Some browsers throw on unsupported actions.
+      }
+      this.updateMediaSession()
+    },
+
+    updateMediaSession() {
+      const ms = typeof navigator !== 'undefined' ? navigator.mediaSession : null
+      if (!ms) return
+      try {
+        if (this.bookId && this.chapterId && typeof MediaMetadata !== 'undefined') {
+          ms.metadata = new MediaMetadata({
+            title: this.chapterTitle || '正在播放',
+            artist: this.bookTitle || 'BookEcho',
+            album: this.bookTitle || 'BookEcho',
+          })
+        }
+      } catch {
+        // MediaMetadata may be unavailable.
+      }
+      try {
+        if (ms.playbackState !== undefined) {
+          ms.playbackState = this.playing ? 'playing' : this.userStartedPlayback ? 'paused' : 'none'
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        const total = Number(this.chapterDuration) || 0
+        const position = Number(this.chapterElapsed) || 0
+        if (
+          total > 0 &&
+          typeof ms.setPositionState === 'function' &&
+          this.userStartedPlayback
+        ) {
+          ms.setPositionState({
+            duration: total,
+            playbackRate: Number(this.speed) || 1,
+            position: Math.max(0, Math.min(total, position)),
+          })
+        }
+      } catch {
+        // ignore invalid position state
+      }
+    },
+
+    async requestWakeLock() {
+      if (typeof navigator === 'undefined' || !navigator.wakeLock?.request) return
+      if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return
+      try {
+        if (this.wakeLock && !this.wakeLock.released) return
+        this.wakeLock = await navigator.wakeLock.request('screen')
+        this.wakeLock.addEventListener?.('release', () => {
+          this.wakeLock = null
+        })
+      } catch {
+        this.wakeLock = null
+      }
+    },
+
+    async releaseWakeLock() {
+      const lock = this.wakeLock
+      this.wakeLock = null
+      if (!lock) return
+      try {
+        await lock.release()
+      } catch {
+        // ignore
+      }
+    },
+
+    scheduleBackgroundResume(reason = '') {
+      if (this.intentionalPause || !this.userStartedPlayback) return
+      this.backgroundResumePending = true
+      if (this.backgroundResumeTimer) {
+        clearTimeout(this.backgroundResumeTimer)
+      }
+      // Small delay avoids fighting intentional segment switches / stopHard teardown.
+      this.backgroundResumeTimer = setTimeout(() => {
+        this.backgroundResumeTimer = null
+        void this.tryResumePlayback(reason || 'scheduled')
+      }, 250)
+    },
+
+    async tryResumePlayback(reason = '') {
+      if (this.intentionalPause) return false
+      if (!this.userStartedPlayback) return false
+      if (this.loading || this.advanceLock) return false
+      const audio = this.audio
+      if (!audio || !this.objectUrl || !audio.currentSrc) return false
+      if (!audio.paused && this.playing) {
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
+        return true
+      }
+      const mediaGen = this.mediaGeneration
+      const playGen = ++this.playGeneration
+      try {
+        this.applyPlaybackRate(audio)
+        await audio.play()
+        if (playGen !== this.playGeneration || mediaGen !== this.mediaGeneration) {
+          try {
+            audio.pause()
+          } catch {
+            // ignore
+          }
+          return false
+        }
+        this.playing = true
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
+        return true
+      } catch {
+        this.backgroundResumePending = true
+        this.playing = false
+        this.updateMediaSession()
+        return false
+      }
     },
 
     /**
@@ -516,6 +726,13 @@ export const usePlayerStore = defineStore('player', {
       // Invalidate all media event handlers / ended callbacks from previous source.
       this.mediaGeneration += 1
       this.playGeneration += 1
+      if (this.backgroundResumeTimer) {
+        clearTimeout(this.backgroundResumeTimer)
+        this.backgroundResumeTimer = null
+      }
+      // Teardown is not an unexpected pause — suppress auto-resume while swapping sources.
+      this.backgroundResumePending = false
+      void this.releaseWakeLock()
       const audio = this.audio
       if (audio) {
         // Keep teardown events STALE — never assign the live generation here.
@@ -670,6 +887,8 @@ export const usePlayerStore = defineStore('player', {
       // and mini/full play buttons can show a loading spinner while TTS is pending.
       this.userStartedPlayback = Boolean(autoplay)
       this.autoplayContinuity = Boolean(autoplay)
+      this.intentionalPause = false
+      this.backgroundResumePending = false
       this.chapterCacheRunning = false
       this.advanceLock = false
 
@@ -1144,6 +1363,10 @@ export const usePlayerStore = defineStore('player', {
             }
             this.userStartedPlayback = true
             this.autoplayContinuity = false
+            this.intentionalPause = false
+            this.backgroundResumePending = false
+            this.requestWakeLock()
+            this.updateMediaSession()
           } catch (playErr) {
             if (
               token === this.loadToken &&
@@ -1153,11 +1376,15 @@ export const usePlayerStore = defineStore('player', {
               this.playing = false
               this.autoplayContinuity = false
               // Keep userStartedPlayback true so the user can retry with toggle.
-              // NotAllowedError usually means gesture unlock failed; leave audio attached.
+              // NotAllowedError / background policy: leave audio attached and retry later.
               const name = playErr?.name || ''
-              if (name && name !== 'NotAllowedError' && name !== 'AbortError') {
+              if (name === 'NotAllowedError' || name === 'AbortError') {
+                this.backgroundResumePending = true
+                this.scheduleBackgroundResume(name || 'autoplay-blocked')
+              } else if (name) {
                 this.error = playErr?.message || '自动播放失败'
               }
+              this.updateMediaSession()
             }
           }
         }
@@ -1169,6 +1396,7 @@ export const usePlayerStore = defineStore('player', {
           this.prefetchAhead()
           this.ensureChapterWindowCache()
         }
+        this.updateMediaSession()
         this.saveProgress(true)
       } catch (e) {
         if (token !== this.loadToken || sessionId !== this.sessionId) return
@@ -1212,6 +1440,7 @@ export const usePlayerStore = defineStore('player', {
         return
       }
       if (audio.paused) {
+        this.intentionalPause = false
         const mediaGen = this.mediaGeneration
         const playGen = ++this.playGeneration
         try {
@@ -1225,15 +1454,24 @@ export const usePlayerStore = defineStore('player', {
             return
           }
           this.userStartedPlayback = true
+          this.backgroundResumePending = false
           this.ensureChapterWindowCache()
+          this.requestWakeLock()
+          this.updateMediaSession()
         } catch (e) {
           if (playGen === this.playGeneration && mediaGen === this.mediaGeneration) {
+            this.backgroundResumePending = true
             this.error = e.message || '播放失败'
+            this.updateMediaSession()
           }
         }
       } else {
+        this.intentionalPause = true
+        this.backgroundResumePending = false
         this.playGeneration += 1
         audio.pause()
+        this.releaseWakeLock()
+        this.updateMediaSession()
         this.saveProgress(true)
       }
     },
@@ -1416,7 +1654,15 @@ export const usePlayerStore = defineStore('player', {
     },
 
     pause() {
+      this.intentionalPause = true
+      this.backgroundResumePending = false
+      if (this.backgroundResumeTimer) {
+        clearTimeout(this.backgroundResumeTimer)
+        this.backgroundResumeTimer = null
+      }
       this.audio?.pause()
+      void this.releaseWakeLock()
+      this.updateMediaSession()
       this.saveProgress(true)
     },
 
@@ -1561,12 +1807,19 @@ export const usePlayerStore = defineStore('player', {
       this.cacheJobToken += 1
       this.playGeneration += 1
       this.advanceLock = false
+      this.intentionalPause = true
+      this.backgroundResumePending = false
+      if (this.backgroundResumeTimer) {
+        clearTimeout(this.backgroundResumeTimer)
+        this.backgroundResumeTimer = null
+      }
       this.stopProgressSync()
       this.stopHard()
       this.prefetching = new Set()
       this.userStartedPlayback = false
       this.autoplayContinuity = false
       this.chapterCacheRunning = false
+      this.updateMediaSession()
     },
   },
 })
