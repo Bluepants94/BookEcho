@@ -182,6 +182,12 @@ export const usePlayerStore = defineStore('player', {
     mediaSessionBound: false,
     visibilityBound: false,
     backgroundResumeTimer: null,
+    /** Second HTMLAudioElement preloaded with the next segment for gapless-ish handoff. */
+    standbyAudio: null,
+    standbyObjectUrl: '',
+    standbySegmentIndex: -1,
+    standbyReady: false,
+    standbySessionId: 0,
   }),
   getters: {
     hasTrack: (s) => Boolean(s.bookId && s.chapterId),
@@ -472,6 +478,18 @@ export const usePlayerStore = defineStore('player', {
         }
         // Keep lock-screen scrubber roughly in sync without flooding Media Session.
         if (Math.floor(live) % 2 === 0) this.updateMediaSession()
+        // When the current segment is nearly over, make sure the next one is
+        // already decoded in the standby Audio element.
+        const dur = Number(audio.duration) || 0
+        if (
+          this.userStartedPlayback &&
+          !this.intentionalPause &&
+          dur > 0 &&
+          live > 0 &&
+          dur - live <= 2.5
+        ) {
+          void this.primeStandby(this.segmentIndex + 1)
+        }
       })
       audio.addEventListener('loadedmetadata', () => {
         if (audio._mediaGeneration !== this.mediaGeneration) return
@@ -538,6 +556,7 @@ export const usePlayerStore = defineStore('player', {
         this.error = '音频加载失败'
         this.playing = false
       })
+      audio._bookechoListenersBound = true
       this.audio = audio
       this.bindBackgroundGuards()
       this.bindMediaSession()
@@ -733,6 +752,7 @@ export const usePlayerStore = defineStore('player', {
       // Teardown is not an unexpected pause — suppress auto-resume while swapping sources.
       this.backgroundResumePending = false
       void this.releaseWakeLock()
+      this.clearStandby({ keepElement: true })
       const audio = this.audio
       if (audio) {
         // Keep teardown events STALE — never assign the live generation here.
@@ -1395,6 +1415,9 @@ export const usePlayerStore = defineStore('player', {
           // Lightweight same-chapter tail prefetch while chapter window runs.
           this.prefetchAhead()
           this.ensureChapterWindowCache()
+          // Warm the next segment into a second Audio element so lock-screen
+          // segment handoff does not wait on JS/network after the screen sleeps.
+          void this.primeStandby(index + 1, { sessionId })
         }
         this.updateMediaSession()
         this.saveProgress(true)
@@ -1412,12 +1435,418 @@ export const usePlayerStore = defineStore('player', {
       }
     },
 
+
+    clearStandby({ keepElement = false } = {}) {
+      const standby = this.standbyAudio
+      if (standby) {
+        try {
+          standby.pause()
+        } catch {
+          // ignore
+        }
+        try {
+          standby.removeAttribute('src')
+          standby.src = ''
+          standby.load()
+        } catch {
+          // ignore
+        }
+        standby._standbyForIndex = -1
+        standby._standbySessionId = 0
+        if (!keepElement) this.standbyAudio = null
+      }
+      if (this.standbyObjectUrl) {
+        try {
+          URL.revokeObjectURL(this.standbyObjectUrl)
+        } catch {
+          // ignore
+        }
+      }
+      this.standbyObjectUrl = ''
+      this.standbySegmentIndex = -1
+      this.standbyReady = false
+      this.standbySessionId = 0
+    },
+
+    ensureStandbyAudio() {
+      if (this.standbyAudio) return this.standbyAudio
+      const audio = configureSafariAudioElement(new Audio())
+      try {
+        audio.preload = 'auto'
+      } catch {
+        // ignore
+      }
+      this.standbyAudio = audio
+      return audio
+    },
+
+    /**
+     * Decode the next segment into a second Audio element while the current one plays.
+     * Critical for lock-screen continuity: ended -> swap -> play must avoid network/IDB.
+     */
+    async primeStandby(index, { sessionId = this.sessionId } = {}) {
+      if (!Number.isFinite(index) || index < 0 || index >= this.segments.length) {
+        this.clearStandby({ keepElement: true })
+        return false
+      }
+      if (!this.userStartedPlayback || this.intentionalPause) return false
+      if (sessionId !== this.sessionId) return false
+      if (
+        this.standbyReady &&
+        this.standbySegmentIndex === index &&
+        this.standbySessionId === sessionId &&
+        this.standbyObjectUrl
+      ) {
+        return true
+      }
+
+      if (this.standbySegmentIndex !== index || this.standbySessionId !== sessionId) {
+        this.clearStandby({ keepElement: true })
+      }
+
+      let blob
+      try {
+        blob = await this.fetchSegmentBlob(index, {
+          sessionId,
+          requireSession: true,
+          forPrefetch: true,
+        })
+      } catch {
+        return false
+      }
+      if (sessionId !== this.sessionId) return false
+      if (!blob) return false
+      blob = asPlayableAudioBlob(blob, loadTtsSettings().audio_format)
+
+      const standby = this.ensureStandbyAudio()
+      if (this.standbyObjectUrl) {
+        try {
+          URL.revokeObjectURL(this.standbyObjectUrl)
+        } catch {
+          // ignore
+        }
+        this.standbyObjectUrl = ''
+      }
+      this.standbyObjectUrl = URL.createObjectURL(blob)
+      this.standbySegmentIndex = index
+      this.standbySessionId = sessionId
+      this.standbyReady = false
+      standby._standbyForIndex = index
+      standby._standbySessionId = sessionId
+      try {
+        standby.pause()
+      } catch {
+        // ignore
+      }
+      standby.src = this.standbyObjectUrl
+      this.applyPlaybackRate(standby)
+      try {
+        standby.load()
+      } catch {
+        // ignore
+      }
+      this.applyPlaybackRate(standby)
+
+      const ready = await new Promise((resolve) => {
+        let settled = false
+        const finish = (ok) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          resolve(ok)
+        }
+        const onCanPlay = () => finish(true)
+        const onError = () => finish(false)
+        const cleanup = () => {
+          standby.removeEventListener('canplaythrough', onCanPlay)
+          standby.removeEventListener('canplay', onCanPlay)
+          standby.removeEventListener('loadeddata', onCanPlay)
+          standby.removeEventListener('error', onError)
+        }
+        standby.addEventListener('canplaythrough', onCanPlay)
+        standby.addEventListener('canplay', onCanPlay)
+        standby.addEventListener('loadeddata', onCanPlay)
+        standby.addEventListener('error', onError)
+        try {
+          if (standby.readyState >= 3) {
+            finish(true)
+            return
+          }
+        } catch {
+          // ignore
+        }
+        window.setTimeout(() => {
+          try {
+            finish(standby.readyState >= 2)
+          } catch {
+            finish(false)
+          }
+        }, 4000)
+      })
+
+      if (sessionId !== this.sessionId) return false
+      if (
+        this.standbySegmentIndex === index &&
+        this.standbySessionId === sessionId &&
+        this.standbyObjectUrl
+      ) {
+        this.standbyReady = Boolean(ready)
+        if (ready) {
+          try {
+            standby.currentTime = 0
+          } catch {
+            // ignore
+          }
+          void this.rememberSegmentDuration(index, blob, { sessionId })
+        }
+        return this.standbyReady
+      }
+      return false
+    },
+
+    /**
+     * Instant handoff from the live Audio element to a preloaded standby segment.
+     * Returns true when playback of the next segment was started without loadSegment().
+     */
+    async playStandbyIfReady(nextIndex, mediaGeneration = null) {
+      if (mediaGeneration != null && mediaGeneration !== this.mediaGeneration) return false
+      if (
+        !this.standbyReady ||
+        this.standbySegmentIndex !== nextIndex ||
+        this.standbySessionId !== this.sessionId ||
+        !this.standbyObjectUrl ||
+        !this.standbyAudio
+      ) {
+        return false
+      }
+
+      const oldAudio = this.audio
+      const oldUrl = this.objectUrl
+      const standby = this.standbyAudio
+      const nextUrl = this.standbyObjectUrl
+
+      this.audio = standby
+      this.standbyAudio = null
+      this.objectUrl = nextUrl
+      this.standbyObjectUrl = ''
+      this.standbyReady = false
+      this.standbySegmentIndex = -1
+      this.standbySessionId = 0
+
+      this.mediaGeneration += 1
+      const mediaGen = this.mediaGeneration
+      this.segmentIndex = nextIndex
+      this.currentTime = 0
+      this.resumeOffset = 0
+      this.duration = Number(standby.duration) || Number(this.segmentDurations[nextIndex]) || 0
+      standby._mediaGeneration = mediaGen
+      this.applyPlaybackRate(standby)
+      this.rebindPrimaryAudioEvents(standby)
+
+      if (oldAudio) {
+        try {
+          oldAudio._mediaGeneration = mediaGen - 1
+          oldAudio.pause()
+        } catch {
+          // ignore
+        }
+        try {
+          oldAudio.removeAttribute('src')
+          oldAudio.src = ''
+          oldAudio.load()
+        } catch {
+          // ignore
+        }
+      }
+      if (oldUrl) {
+        try {
+          URL.revokeObjectURL(oldUrl)
+        } catch {
+          // ignore
+        }
+      }
+
+      const playGen = ++this.playGeneration
+      try {
+        this.applyPlaybackRate(standby)
+        await standby.play()
+        this.applyPlaybackRate(standby)
+        if (playGen !== this.playGeneration || mediaGen !== this.mediaGeneration) {
+          try {
+            standby.pause()
+          } catch {
+            // ignore
+          }
+          return false
+        }
+        this.playing = true
+        this.userStartedPlayback = true
+        this.autoplayContinuity = false
+        this.intentionalPause = false
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
+        this.prefetchAhead()
+        this.ensureChapterWindowCache()
+        void this.primeStandby(nextIndex + 1)
+        this.saveProgress(true)
+        return true
+      } catch (playErr) {
+        this.playing = false
+        this.backgroundResumePending = true
+        this.scheduleBackgroundResume(playErr?.name || 'standby-play-failed')
+        this.updateMediaSession()
+        return false
+      }
+    },
+
+    /**
+     * The original Audio element receives listeners in ensureAudio(). When we promote
+     * standby, attach the same generation-gated listeners once.
+     */
+    rebindPrimaryAudioEvents(audio) {
+      if (!audio || audio._bookechoListenersBound) return
+      audio._bookechoListenersBound = true
+
+      const syncDurationFromAudio = () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        const segDur = Number(audio.duration)
+        if (segDur > 0 && Number.isFinite(segDur)) {
+          this.duration = segDur
+          this.setSegmentDuration(this.segmentIndex, segDur)
+        }
+      }
+
+      const applyResumeOffset = () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        if (!(this.resumeOffset > 0)) return
+        const target = this.resumeOffset
+        this.currentTime = Math.max(Number(this.currentTime) || 0, target)
+        const segDur = Number(audio.duration)
+        if (segDur > 0 && Number.isFinite(segDur) && target >= segDur - 0.05) {
+          try {
+            audio.currentTime = Math.max(0, segDur - 0.05)
+            this.currentTime = audio.currentTime || Math.max(0, segDur - 0.05)
+          } catch {
+            // ignore
+          }
+          this.resumeOffset = 0
+          return
+        }
+        try {
+          audio.currentTime = target
+          const applied = Number(audio.currentTime)
+          if (Number.isFinite(applied) && Math.abs(applied - target) <= 0.35) {
+            this.currentTime = applied
+            this.resumeOffset = 0
+          } else {
+            this.currentTime = target
+          }
+        } catch {
+          this.currentTime = target
+        }
+      }
+
+      audio.addEventListener('timeupdate', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        const live = Number(audio.currentTime) || 0
+        if (this.resumeOffset > 0) {
+          if (live > 0 && Math.abs(live - this.resumeOffset) <= 0.35) {
+            this.currentTime = live
+            this.resumeOffset = 0
+          } else {
+            this.currentTime = Math.max(live, this.resumeOffset)
+          }
+        } else {
+          this.currentTime = live
+        }
+        syncDurationFromAudio()
+        const rate = Number(this.speed) || 1
+        if (Math.abs((audio.playbackRate || 1) - rate) > 0.01) {
+          this.applyPlaybackRate(audio)
+        }
+        if (Math.floor(live) % 2 === 0) this.updateMediaSession()
+        const dur = Number(audio.duration) || 0
+        if (
+          this.userStartedPlayback &&
+          !this.intentionalPause &&
+          dur > 0 &&
+          live > 0 &&
+          dur - live <= 2.5
+        ) {
+          void this.primeStandby(this.segmentIndex + 1)
+        }
+      })
+      audio.addEventListener('loadedmetadata', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        this.applyPlaybackRate(audio)
+        syncDurationFromAudio()
+        if (!(Number(audio.duration) > 0)) this.duration = 0
+        applyResumeOffset()
+      })
+      audio.addEventListener('durationchange', () => {
+        syncDurationFromAudio()
+        applyResumeOffset()
+      })
+      audio.addEventListener('canplay', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        this.applyPlaybackRate(audio)
+        syncDurationFromAudio()
+        applyResumeOffset()
+      })
+      audio.addEventListener('ended', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        this.onEnded(audio._mediaGeneration)
+      })
+      audio.addEventListener('play', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        this.applyPlaybackRate(audio)
+        this.playing = true
+        this.intentionalPause = false
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
+      })
+      audio.addEventListener('playing', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        this.applyPlaybackRate(audio)
+        this.playing = true
+        this.intentionalPause = false
+        this.backgroundResumePending = false
+        this.requestWakeLock()
+        this.updateMediaSession()
+      })
+      audio.addEventListener('pause', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        this.playing = false
+        this.releaseWakeLock()
+        this.updateMediaSession()
+        if (
+          this.userStartedPlayback &&
+          !this.intentionalPause &&
+          !this.loading &&
+          !this.advanceLock &&
+          this.objectUrl &&
+          audio.currentSrc
+        ) {
+          this.scheduleBackgroundResume('unexpected-pause')
+        }
+      })
+      audio.addEventListener('error', () => {
+        if (audio._mediaGeneration !== this.mediaGeneration) return
+        if (!this.objectUrl || !audio.currentSrc) return
+        this.error = '音频加载失败'
+        this.playing = false
+      })
+    },
+
     prefetchAhead() {
       const fingerprint = getTtsCacheFingerprint()
       const bookId = this.bookId
       const chapterId = this.chapterId
       const sessionId = this.sessionId
-      const targets = [1, 2]
+      // Prefetch a bit deeper so lock-screen multi-segment runs stay warm.
+      const targets = [1, 2, 3]
         .map((d) => this.segmentIndex + d)
         .filter((i) => i < this.segments.length)
       targets.forEach((i) => {
@@ -1634,7 +2063,10 @@ export const usePlayerStore = defineStore('player', {
 
         if (endedSegmentIndex < this.segments.length - 1) {
           this.resumeOffset = 0
-          await this.loadSegment(endedSegmentIndex + 1, true)
+          const nextIndex = endedSegmentIndex + 1
+          const swapped = await this.playStandbyIfReady(nextIndex, mediaGeneration)
+          if (swapped) return
+          await this.loadSegment(nextIndex, true)
           return
         }
 
@@ -1815,6 +2247,7 @@ export const usePlayerStore = defineStore('player', {
       }
       this.stopProgressSync()
       this.stopHard()
+      this.clearStandby({ keepElement: false })
       this.prefetching = new Set()
       this.userStartedPlayback = false
       this.autoplayContinuity = false
